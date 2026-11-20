@@ -9,7 +9,7 @@ description = "Cost-aware, fault-tolerant multi-agent swarm for large batch work
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = ["anthropic>=0.105"]
+dependencies = ["anthropic>=0.105,<1"]  # tested on 0.105.x; 1.x moved to httpx2
 keywords = ["llm", "multi-agent", "agents", "claude", "batching", "thompson-sampling", "reliability"]
 classifiers = [
     "Programming Language :: Python :: 3",
