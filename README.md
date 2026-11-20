@@ -4,7 +4,7 @@
 the fewest tokens per task and the highest verified success rate, built from what the
 2025–2026 multi-agent research actually supports.**
 
-![CI](https://img.shields.io/badge/CI-ruff%20·%20mypy%20·%20pytest-informational)
+[![CI](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
 ![Tests](https://img.shields.io/badge/tests-27%20passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)

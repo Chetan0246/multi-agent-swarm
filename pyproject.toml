@@ -17,6 +17,11 @@ classifiers = [
     "Framework :: AsyncIO",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Chetan0246/multi-agent-swarm"
+Documentation = "https://github.com/Chetan0246/multi-agent-swarm/blob/main/docs/ARCHITECTURE.md"
+Changelog = "https://github.com/Chetan0246/multi-agent-swarm/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "matplotlib>=3.8"]
 
