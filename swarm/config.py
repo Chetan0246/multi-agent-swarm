@@ -24,8 +24,8 @@ from .errors import ConfigError
 
 try:  # Python 3.11+
     import tomllib as _toml
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10
-    _toml = None
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 uses the tomli backport
+    import tomli as _toml
 
 
 def config_paths() -> list[Path]:
@@ -41,8 +41,6 @@ def load_config(path: str | Path | None = None) -> tuple[dict[str, Any], Path | 
     candidates = [Path(path)] if path else config_paths()
     for p in candidates:
         if p.is_file():
-            if _toml is None:
-                raise ConfigError(f"{p}: reading TOML needs Python 3.11+ (or remove the file)")
             try:
                 return _toml.loads(p.read_text()), p
             except Exception as e:

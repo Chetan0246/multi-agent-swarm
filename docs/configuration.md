@@ -6,7 +6,6 @@ preset defaults, then the config file, then environment variables, then command-
 The config file is the first of these that exists: `./swarm.toml`, the file named by
 `$SWARM_CONFIG`, or `~/.config/swarm/config.toml`. A commented example is in
 [`examples/swarm.toml`](https://github.com/Chetan0246/multi-agent-swarm/blob/main/examples/swarm.toml).
-Reading a config file needs Python 3.11 or later.
 
 | Environment variable | Meaning |
 |---|---|

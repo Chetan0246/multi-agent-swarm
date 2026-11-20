@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [{ name = "Multi-Agent Swarm contributors" }]
-dependencies = ["anthropic>=2.12,<3", "httpx2>=2.0"]
+dependencies = ["anthropic>=2.12,<3", "httpx2>=2.0", "tomli>=2.0; python_version < '3.11'"]
 keywords = ["llm", "multi-agent", "agents", "claude", "deep-research", "web-search", "citations",
             "fact-checking", "tinyfish", "research-assistant"]
 classifiers = [

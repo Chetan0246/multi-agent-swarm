@@ -38,6 +38,7 @@ or pass `--search anthropic` to keep Claude's server-side search.
   - Dependabot, pre-commit, issue and PR templates, CONTRIBUTING, CODE_OF_CONDUCT and SECURITY;
   - CI now reports coverage and installs the built wheel.
 - 14 new tests (61 in total), all offline.
+- Config files work on Python 3.10 through the `tomli` backport, which is installed only there.
 
 ## 2.3.0 — launch blockers: SDK 2.x, cost, claim checking, injection defences, evaluation
 - **SDK 2.x:** moved to `anthropic>=2.12,<3`, which sends API version `2026-10-21` and the API
