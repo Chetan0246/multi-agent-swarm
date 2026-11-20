@@ -2,6 +2,7 @@
 
   python -m swarm bench [--n 600 --seeds 3]   offline benchmark (simulated backend)
   python -m swarm run tasks.jsonl [options]   process a JSONL workload on Claude
+  python -m swarm research "question" --out report.md   deep research with cited report
   python -m swarm gen out.jsonl --n 50        write a sample checkable workload
 """
 from __future__ import annotations
@@ -138,6 +139,34 @@ def cmd_run(a: argparse.Namespace) -> None:
     print(json.dumps(report.summary(), indent=2), file=sys.stderr)
 
 
+def cmd_research(a: argparse.Namespace) -> None:
+    import asyncio
+
+    from .research import AnthropicResearchLLM, MockResearchLLM, ResearchConfig, ResearchLLM, deep_research
+
+    llm: ResearchLLM = MockResearchLLM() if a.mock else AnthropicResearchLLM(
+        max_searches=a.max_searches, use_fallbacks=not a.no_fallbacks)
+    cfg = ResearchConfig(model=a.model, efforts=tuple(a.efforts.split(",")),
+                         max_subquestions=a.max_subquestions, max_agents=a.max_agents,
+                         min_citations=a.min_citations, min_domains=a.min_domains, token_budget=a.budget)
+
+    def progress(kind: str, data: dict) -> None:
+        if kind == "plan":
+            print(f"planned {data['unique']} sub-questions, {data['agents']} parallel workers",
+                  file=sys.stderr)
+        elif kind == "batch":
+            print(f"  worker done: effort rung {data['rung']}, verified {data['ok']}/{data['size']}, "
+                  f"{data['latency']}s", file=sys.stderr)
+
+    report = asyncio.run(deep_research(a.question, llm, cfg, on_event=progress))
+    if a.out:
+        Path(a.out).write_text(report.markdown)
+        print(f"wrote {a.out}", file=sys.stderr)
+    else:
+        print(report.markdown)
+    print(json.dumps(report.stats, indent=2), file=sys.stderr)
+
+
 def cmd_gen(a: argparse.Namespace) -> None:
     with open(a.path, "w") as f:
         for t in mixed_workload(a.n, seed=a.seed):
@@ -178,6 +207,21 @@ def main() -> None:
     r.add_argument("--out", default=None)
     r.add_argument("--no-fallbacks", action="store_true")
     r.set_defaults(fn=cmd_run)
+
+    q = sub.add_parser("research", help="deep research: parallel cited web research -> report")
+    q.add_argument("question")
+    q.add_argument("--out", default=None, help="write the Markdown report here")
+    q.add_argument("--mock", action="store_true", help="offline demo, no API calls")
+    q.add_argument("--model", default="claude-opus-5-5")
+    q.add_argument("--efforts", default="low,medium,high", help="worker escalation ladder")
+    q.add_argument("--max-subquestions", type=int, default=6)
+    q.add_argument("--max-agents", type=int, default=6)
+    q.add_argument("--max-searches", type=int, default=5, help="web searches per worker call")
+    q.add_argument("--min-citations", type=int, default=2)
+    q.add_argument("--min-domains", type=int, default=2)
+    q.add_argument("--budget", type=float, default=None, help="max billed-equivalent tokens for workers")
+    q.add_argument("--no-fallbacks", action="store_true")
+    q.set_defaults(fn=cmd_research)
 
     g = sub.add_parser("gen", help="write a sample workload")
     g.add_argument("path")

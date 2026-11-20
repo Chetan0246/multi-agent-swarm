@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multi-agent-swarm"
-version = "2.1.0"
-description = "Cost-aware, fault-tolerant multi-agent swarm for large batch workloads on Claude"
+version = "2.2.0"
+description = "Deep research with a cost-aware, fault-tolerant multi-agent swarm on Claude: parallel cited web research, verified findings, one report"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = ["anthropic>=0.105,<1"]  # tested on 0.105.x; 1.x moved to httpx2
-keywords = ["llm", "multi-agent", "agents", "claude", "batching", "thompson-sampling", "reliability"]
+keywords = ["llm", "multi-agent", "agents", "claude", "deep-research", "web-search", "citations", "batching", "thompson-sampling", "reliability"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",

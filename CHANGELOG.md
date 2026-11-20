@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.2.0 — deep research
+- New `swarm research "question"` command. A planner splits the question into independent
+  sub-questions, and parallel Claude workers research them with server-side web search and
+  fetch (resuming `pause_turn`).
+- Each finding passes a deterministic citation gate (≥ 2 sources from ≥ 2 domains); weak
+  findings are re-researched at higher effort.
+- Synthesis writes a report from the findings, then a code check removes references to
+  non-existent sources and counts uncited paragraphs.
+- Runs on the existing engine (queue, AIMD, circuit breaker, budget), with hedging off and
+  one worker per sub-question. `--mock` gives a full offline demo.
+- 7 new tests, including the real client against a mocked HTTP transport.
+
 ## 2.1.0 — research-informed hardening
 - Anthropic 429s are classified by `error.details.error_code`: a spend cap stops the run
   cleanly (no retry storm), a ramp limit holds the rate instead of halving it, and

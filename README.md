@@ -1,12 +1,13 @@
 # Multi-Agent Swarm
 
-**A cost-aware, fault-tolerant scheduler that runs large LLM workloads with the fewest agents,
-the fewest tokens per task and the highest verified success rate, built from what the
-2025–2026 multi-agent research actually supports.**
+**Deep research with a multi-agent swarm: ask a question and get a cited report.**
+Parallel Claude workers each research one sub-question on the web. Every finding is
+citation-checked in code before it can be used, and the whole run is scheduled by a
+cost-aware, fault-tolerant engine built from what 2025–2026 multi-agent research supports.
 
 [![CI](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
-![Tests](https://img.shields.io/badge/tests-27%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-34%20passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 > **Thesis**, from the [research report](docs/research/Multi%20agent%20swarms%20state%20of%20the%20art.md):
@@ -18,7 +19,55 @@ the fewest tokens per task and the highest verified success rate, built from wha
 > scheduler**, and spends its engineering on control: how much compute each item deserves,
 > and how to prove the answer before paying for more.
 
-## Results at a glance
+## Deep research
+
+```bash
+python -m swarm research "How do heat pumps compare to gas boilers in cold climates?" --out report.md
+```
+
+```
+question ─► plan (1 call): independent sub-questions, count scaled to the question
+         ─► swarm engine: one worker per sub-question, in parallel
+              each worker: Claude + server-side web search/fetch → answer with citations
+              gate (code): ≥ 2 sources from ≥ 2 distinct domains, enough substance
+              weak finding → re-researched at higher effort (low → medium → high)
+         ─► synthesis (1 call): report from verified findings only, inline [n] citations
+         ─► integrity check (code): drop references to non-existent sources, count
+            uncited paragraphs, append the numbered source list
+```
+
+**Why this use case.** Seeking information and practical guidance are among the three most
+common things people use chat assistants for: together with writing, nearly 80% of about
+1.1M ChatGPT conversations ([NBER, 2025](https://www.nber.org/papers/w34255)). Seeking
+information largely substitutes for web search. Breadth-first research is also where the
+multi-agent evidence is strongest: Anthropic's orchestrator-worker research system beat a
+single agent by **90.2%** and cut research time by up to 90%, because each worker searches
+with a fresh context ([Anthropic](https://www.anthropic.com/engineering/multi-agent-research-system)).
+
+**What the design takes from the research:**
+- **Code, not an LLM, schedules the workers.** They pull from the engine's queue, so the run
+  never stalls on the synchronous-wave bottleneck Anthropic describes.
+- **Workers never talk to each other.** Inter-agent misalignment is about a third of
+  multi-agent failures in the MAST study (1,642 traces).
+- **Every finding passes a deterministic citation gate.** Missing verification is about a
+  quarter of failures, and adding a verification step gave +15.6% in MAST.
+- **Weak findings escalate effort rather than starting a debate.** Debate's gains come
+  mostly from voting.
+- **No hedging on research calls.** Duplicating a multi-search call doubles a large cost.
+
+Every run prints its stats: sub-questions, verified %, agents, worker calls, web searches,
+sources, tokens, wall time, escalations, invalid references removed and uncited paragraphs.
+`--mock` runs the whole pipeline offline with no API calls.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--max-subquestions` / `--max-agents` | 6 / 6 | breadth and parallelism caps |
+| `--efforts` | `low,medium,high` | worker escalation ladder on `--model` (`claude-opus-5-5`) |
+| `--max-searches` | 5 | web searches per worker call |
+| `--min-citations` / `--min-domains` | 2 / 2 | the citation gate |
+| `--budget` | none | ceiling on worker tokens |
+
+## Engine results at a glance
 
 Offline simulator, 500 tasks × 3 seeds, against a hostile endpoint: 4% of calls are 10×
 stragglers, and a 0.4 s 5xx incident fails 90% of calls. It runs on three endpoint profiles
@@ -51,7 +100,7 @@ that differ in how much accuracy big batches cost. Means are shown with 95% CIs.
   **prompt-cache reads (0.05–0.1× input price)**, because the simulator doesn't model them.
   Nothing here measures Claude's accuracy; run `swarm run` on your own tasks for that.
 
-## How it works
+## How the engine works
 
 ```
 tasks ─► resume (WAL) ─► dedupe/cache ─► pools[(min_rung, difficulty)]
@@ -157,7 +206,7 @@ Following *AI Agents That Matter* (Kapoor et al. 2024) and HAL (ICLR 2026):
   (best fixed configuration);
 - an adversarial simulator with three endpoint profiles, **clearly labelled as simulated**.
 
-CI runs ruff, mypy, 27 tests on Python 3.10–3.13, and a benchmark smoke test. The tests cover
+CI runs ruff, mypy, 34 tests on Python 3.10–3.13, and a benchmark smoke test. The tests cover
 the policy maths, every reliability path, and both real backends against a mocked HTTP
 transport, with no network and no spend.
 
@@ -172,17 +221,20 @@ swarm/
   limiter.py       AIMD concurrency (with ramp-limit hold)
   planner.py       config, escalation ladder, agent-count knee
   task.py          tasks, checkers
-  __main__.py      CLI: bench / run / gen
+  research.py      deep research: planner, web-search workers, citation gate, synthesis
+  __main__.py      CLI: research / bench / run / gen
 docs/
   ARCHITECTURE.md  design decisions with evidence
   research/        literature review + source notes
   assets/          benchmark JSON and charts
 scripts/plot_benchmark.py
-tests/test_swarm.py
+tests/test_swarm.py, tests/test_research.py
 ```
 
 ## Limitations and roadmap
 
+- [ ] Deep-research evaluation on a question set (e.g. BrowseComp-style) against a single
+      agent with the same token budget.
 - [ ] Real-endpoint benchmark on Claude: dollars per verified success, the effort sweep, and
       whether batching reduces thinking tokens on adaptive-thinking models (open questions in
       the report).

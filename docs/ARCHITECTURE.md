@@ -16,6 +16,21 @@ already strong (Kim et al., *Towards a Science of Scaling Agent Systems*, arXiv 
 2025–26). The swarm therefore does not use agents that talk to each other. Its agents are
 **independent workers on independent tasks**, and all coordination is done by code.
 
+## Primary use case: deep research
+
+`swarm/research.py` puts a research front end on the engine. It runs plan → parallel
+web-research workers (one sub-question each) → citation gate → escalation → synthesis →
+reference-integrity check. It was chosen because information-seeking is among the most
+common uses of chat assistants, and breadth-first research has the strongest multi-agent
+evidence. The research-specific choices:
+- **Server-side web tools** (`web_search_20260209`, `web_fetch_20260209`): there is no
+  client tool loop, and `pause_turn` is resumed by resending the turn so far.
+- **No structured output on workers**, because citations and JSON-schema output can't be
+  combined. Workers return cited text, and the engine wraps it as JSON for the validator.
+- **Batch size 1 and no hedging**, because each call is already a multi-search job.
+- **Unverified findings are passed to synthesis labelled as such**, and the prompt requires
+  a Limitations section. They are not silently dropped.
+
 ## Pipeline
 
 ```
