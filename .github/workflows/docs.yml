@@ -1,0 +1,29 @@
+name: docs
+
+# Builds the documentation site and publishes it to GitHub Pages (free).
+# One-time setup: Settings -> Pages -> Source: GitHub Actions.
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**", "mkdocs.yml", "README.md", "CHANGELOG.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: { name: github-pages, url: "${{ steps.pages.outputs.page_url }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install "mkdocs-material>=9.5"
+      - run: mkdocs build --strict
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: site }
+      - id: pages
+        uses: actions/deploy-pages@v4

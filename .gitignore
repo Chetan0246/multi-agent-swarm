@@ -11,3 +11,6 @@ dist/
 .swarm_cache.json
 results*.jsonl
 tasks.jsonl
+site/
+.claude/
+.coverage

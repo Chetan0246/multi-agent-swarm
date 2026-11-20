@@ -21,7 +21,7 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: ruff check swarm tests scripts
       - run: mypy swarm
-      - run: pytest -q
+      - run: pytest -q --cov --cov-report=term-missing:skip-covered
 
   bench-smoke:
     # The simulator benchmark is the regression guard for the scheduler's trade-offs.
@@ -36,7 +36,11 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: python -m swarm bench --n 200 --seeds 1 --profile v1-tuned --out bench.json
       - name: Deep research end to end (offline mock)
-        run: python -m swarm research "Smoke test question" --mock --out report.md
+        run: python -m swarm research "Smoke test question" --mock --out report.html
+      - name: Package builds and installs cleanly
+        run: |
+          pip install build && python -m build
+          python -m venv /tmp/v && /tmp/v/bin/pip install dist/*.whl && /tmp/v/bin/swarm doctor
       - name: Evaluation harness (offline mock)
         run: python -m swarm eval --mock --limit 4 --out eval.json
       - uses: actions/upload-artifact@v4
@@ -44,5 +48,5 @@ jobs:
           name: bench
           path: |
             bench.json
-            report.md
+            report.html
             eval.json

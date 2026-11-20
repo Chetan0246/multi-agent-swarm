@@ -1,0 +1,18 @@
+# Copy to ./swarm.toml or ~/.config/swarm/config.toml. Command-line flags and
+# environment variables (SWARM_MODEL, SWARM_MAX_USD, SWARM_SEARCH, SWARM_PRESET) win.
+
+[research]
+preset = "standard"            # quick | standard | deep
+model = "claude-opus-5-5"      # planning, synthesis and claim checks
+# worker_model = "claude-sonnet-5-5"   # cheaper research workers
+max_usd = 2.0                  # hard cap per run (0 = no cap)
+search = "tinyfish"            # tinyfish (free) | anthropic (server-side, $10 per 1,000 searches)
+exclude_domains = ["pinterest.com", "quora.com"]
+# include_domains = ["nih.gov", "nature.com"]
+# language = "de"
+
+[server]
+max_usd_per_job = 2.0          # cap applied to every job, whatever the request asks
+max_concurrent_jobs = 2
+allow_mock = true
+# api_token = "..."            # prefer the SWARM_API_TOKEN environment variable

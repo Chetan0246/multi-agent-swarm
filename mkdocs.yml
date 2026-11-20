@@ -1,0 +1,25 @@
+site_name: Multi-Agent Swarm
+site_description: Deep research with a multi-agent swarm on Claude, with every quote checked against its source.
+site_url: https://chetan0246.github.io/multi-agent-swarm/
+repo_url: https://github.com/Chetan0246/multi-agent-swarm
+edit_uri: edit/main/docs/
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle: { icon: material/weather-sunny, name: Light mode }
+  features: [navigation.sections, content.code.copy, search.suggest]
+markdown_extensions: [admonition, tables, toc: { permalink: true }, pymdownx.superfences]
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Command line: cli.md
+  - Web UI and API: web-api.md
+  - Configuration: configuration.md
+  - How it works: ARCHITECTURE.md
+  - Privacy and costs: privacy.md
+  - Research report: research/Multi agent swarms state of the art.md

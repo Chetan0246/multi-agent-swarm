@@ -18,6 +18,25 @@ already strong (Kim et al., *Towards a Science of Scaling Agent Systems*, arXiv 
 
 ## Primary use case: deep research
 
+### v3: free client-side search, and quote grounding
+Workers no longer depend on Claude's server-side web search ($10 per 1,000 searches). They
+call **client-side tools** backed by pluggable providers:
+- **TinyFish** Search and Fetch, free within a daily allowance;
+- your local documents (BM25);
+- a disk cache in front of either.
+
+This is a manual tool loop that we own:
+- parallel tool calls run concurrently, and their results go back in a single user message;
+- the conversation is cached on each turn, and the final turn forbids further tool calls;
+- the worker's last message is structured JSON: an `answer` plus `sources` with verbatim
+  `quote`s.
+
+That gives a property server-side search didn't: **every quote is checked by code against
+the text the worker actually retrieved** (case-, markup- and whitespace-insensitive, with
+ellipses allowed). Unmatched quotes are dropped. So a citation can't be invented: it must
+point to text that exists on the page. Tool output is wrapped in `<untrusted_content>` as
+part of the injection defences.
+
 `swarm/research.py` puts a research front end on the engine. It runs plan → parallel
 web-research workers (one sub-question each) → citation gate → escalation → synthesis →
 reference-integrity check. It was chosen because information-seeking is among the most

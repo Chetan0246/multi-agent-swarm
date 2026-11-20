@@ -1,0 +1,17 @@
+name: Bug report
+description: Something doesn't work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes: { label: What happened, description: "Include the command or API call, and what you expected." }
+    validations: { required: true }
+  - type: textarea
+    id: doctor
+    attributes: { label: Output of `swarm doctor`, render: text }
+  - type: textarea
+    id: logs
+    attributes: { label: Error output, description: "Remove any API keys before pasting.", render: text }
+  - type: input
+    id: version
+    attributes: { label: Version, placeholder: "3.0.0" }

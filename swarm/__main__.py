@@ -2,7 +2,9 @@
 
   python -m swarm bench [--n 600 --seeds 3]   offline benchmark (simulated backend)
   python -m swarm run tasks.jsonl [options]   process a JSONL workload on Claude
-  python -m swarm research "question" --out report.md   deep research with cited report
+  python -m swarm research "question" --out report.html  deep research with cited report
+  python -m swarm doctor [--online]                     check setup, keys and config
+  python -m swarm serve                                 web UI + REST API on localhost:8000
   python -m swarm eval [questions.jsonl] [--mock]       evaluate vs a single-agent baseline
   python -m swarm gen out.jsonl --n 50        write a sample checkable workload
 """
@@ -143,51 +145,103 @@ def cmd_run(a: argparse.Namespace) -> None:
 def cmd_research(a: argparse.Namespace) -> None:
     import asyncio
 
+    from .app import ResearchOptions, resolve, run_research
+    from .export import load_report, write_report
     from .pricing import estimate_research
-    from .research import (
-        AnthropicResearchLLM,
-        MockResearchLLM,
-        OverBudget,
-        ResearchConfig,
-        ResearchLLM,
-        deep_research,
-    )
 
-    cfg = ResearchConfig(model=a.model, efforts=tuple(a.efforts.split(",")),
-                         max_subquestions=a.max_subquestions, max_agents=a.max_agents,
-                         max_searches=a.max_searches, min_citations=a.min_citations,
-                         min_domains=a.min_domains, max_usd=a.max_usd or None,
-                         check_claims=not a.no_claim_check)
-    est = estimate_research(cfg.model, cfg.max_subquestions, cfg.max_searches, cfg.efforts)
+    opts = ResearchOptions(
+        question=a.question, preset=a.preset, search=a.search, mock=a.mock, docs=a.docs or [],
+        docs_only=a.docs_only, include_domains=_csv(a.include_domains), exclude_domains=_csv(a.exclude_domains),
+        recency_days=a.recency_days, kind="news" if a.news else "research_paper" if a.papers else None,
+        language=a.language, model=a.model, worker_model=a.worker_model, max_usd=a.max_usd,
+        max_subquestions=a.max_subquestions, max_agents=a.max_agents, max_searches=a.max_searches,
+        check_claims=False if a.no_claim_check else None, use_cache=not a.no_cache, config_path=a.config)
+    _, cfg, info = resolve(opts)
+    est = estimate_research(cfg.model, cfg.max_subquestions, cfg.max_searches, cfg.efforts,
+                            free_search=cfg.free_search)
     cap = f"cap ${cfg.max_usd:.2f}" if cfg.max_usd else "no cap"
-    print(f"estimate: {est} ({cap}){' [mock: no real spend]' if a.mock else ''}", file=sys.stderr)
+    print(f"preset {info['preset']}, search {info['search']}, estimate {est} ({cap})"
+          f"{' [mock: no real spend]' if a.mock else ''}", file=sys.stderr)
     if a.estimate:
         return
-    llm: ResearchLLM = MockResearchLLM() if a.mock else AnthropicResearchLLM(
-        max_searches=a.max_searches, use_fallbacks=not a.no_fallbacks)
+    prior = load_report(a.follow_up) if a.follow_up else None
 
     def progress(kind: str, data: dict) -> None:
         if kind == "plan":
-            print(f"planned {data['unique']} sub-questions, {data['agents']} parallel workers",
-                  file=sys.stderr)
+            print(f"planned {data['unique']} sub-questions, {data['agents']} parallel workers", file=sys.stderr)
         elif kind == "batch":
             print(f"  worker done: effort rung {data['rung']}, verified {data['ok']}/{data['size']}, "
                   f"{data['latency']}s", file=sys.stderr)
 
-    try:
-        report = asyncio.run(deep_research(a.question, llm, cfg, on_event=progress))
-    except OverBudget as e:
-        sys.exit(f"error: {e}")
+    report = asyncio.run(run_research(opts, on_event=progress, prior=prior))
     if a.out:
-        Path(a.out).write_text(report.markdown)
-        print(f"wrote {a.out}", file=sys.stderr)
+        fmt = write_report(report, a.out, a.format)
+        print(f"wrote {a.out} ({fmt})", file=sys.stderr)
+        if fmt != "json":  # keep a JSON copy so the report can be followed up later
+            json_path = str(Path(a.out).with_suffix(".json"))
+            write_report(report, json_path, "json")
+            print(f"wrote {json_path} (for --follow-up)", file=sys.stderr)
     else:
         print(report.markdown)
-    print(json.dumps(report.stats, indent=2), file=sys.stderr)
+    if a.verbose:
+        print(json.dumps(report.stats, indent=2), file=sys.stderr)
     s = report.stats
     print(f"cost ${s['usd']:.2f} (estimate {s['usd_estimate']}), {s['wall_time_s']}s, "
           f"{s['verified_%']}% findings verified, claim support {s.get('claim_support_%', 'n/a')}%",
           file=sys.stderr)
+
+
+def _csv(v: str | None) -> list[str] | None:
+    return [x.strip() for x in v.split(",") if x.strip()] if v else None
+
+
+def cmd_doctor(a: argparse.Namespace) -> None:
+    import asyncio
+    import importlib.util
+    import os
+    import platform
+
+    from . import __version__
+    from .config import cache_dir, load_config
+
+    ok = lambda b: "ok " if b else "-- "  # noqa: E731
+    print(f"multi-agent-swarm {__version__} on Python {platform.python_version()}")
+    try:
+        import anthropic
+        print(f"{ok(True)}anthropic SDK {anthropic.__version__}")
+    except ModuleNotFoundError:
+        print(f"{ok(False)}anthropic SDK not installed (pip install multi-agent-swarm)")
+    cfg, path = load_config(a.config)
+    print(f"{ok(path is not None)}config file: {path or 'none (defaults)'}")
+    has_claude = any(os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"))
+    print(f"{ok(has_claude)}Anthropic credentials in environment"
+          f"{'' if has_claude else ' (set ANTHROPIC_API_KEY, or rely on `ant auth login`)'}")
+    has_tf = bool(os.environ.get("TINYFISH_API_KEY"))
+    print(f"{ok(has_tf)}TINYFISH_API_KEY{'' if has_tf else ' missing: free key at https://agent.tinyfish.ai/api-keys'}")
+    print(f"{ok(True)}cache dir: {cache_dir()}")
+    for mod, why in [("pypdf", "PDF documents (--docs)"), ("fastapi", "web UI / API (swarm serve)"),
+                     ("uvicorn", "web UI / API (swarm serve)")]:
+        print(f"{ok(importlib.util.find_spec(mod) is not None)}{mod}: {why}")
+    if a.online and has_tf:
+        from .search.tinyfish import TinyFish
+
+        async def probe():
+            tf = TinyFish()
+            try:
+                hits = await tf.search("TinyFish search API")
+                return f"TinyFish search works ({len(hits)} results)"
+            finally:
+                await tf.aclose()
+        try:
+            print(f"{ok(True)}{asyncio.run(probe())}")
+        except Exception as e:
+            print(f"{ok(False)}TinyFish search failed: {e}")
+
+
+def cmd_serve(a: argparse.Namespace) -> None:
+    from .server import serve
+
+    serve(host=a.host, port=a.port, config_path=a.config)
 
 
 def cmd_eval(a: argparse.Namespace) -> None:
@@ -281,20 +335,45 @@ def main() -> None:
 
     q = sub.add_parser("research", help="deep research: parallel cited web research -> report")
     q.add_argument("question")
-    q.add_argument("--out", default=None, help="write the Markdown report here")
+    q.add_argument("--preset", choices=["quick", "standard", "deep"], default=None,
+                   help="depth/cost preset (default standard)")
+    q.add_argument("--search", choices=["tinyfish", "anthropic"], default=None,
+                   help="tinyfish: free TinyFish search+fetch (default); anthropic: Claude server-side ($10/1k)")
+    q.add_argument("--docs", nargs="+", metavar="PATH", help="your own files/folders as sources (txt, md, html, pdf)")
+    q.add_argument("--docs-only", action="store_true", help="research only --docs, no web")
+    q.add_argument("--include-domains", help="comma-separated domains to search only")
+    q.add_argument("--exclude-domains", help="comma-separated domains to skip")
+    q.add_argument("--recency-days", type=int, help="only results from the last N days")
+    q.add_argument("--news", action="store_true", help="search news sources")
+    q.add_argument("--papers", action="store_true", help="search research papers")
+    q.add_argument("--language", help="report and search language, e.g. de, fr, ja")
+    q.add_argument("--out", default=None, help="write the report here (.md, .html or .json)")
+    q.add_argument("--format", choices=["md", "html", "json"], default=None, help="override format from --out")
+    q.add_argument("--follow-up", metavar="REPORT.json", help="extend an earlier report instead of starting over")
     q.add_argument("--mock", action="store_true", help="offline demo, no API calls")
-    q.add_argument("--model", default="claude-opus-5-5")
-    q.add_argument("--efforts", default="low,medium,high", help="worker escalation ladder")
-    q.add_argument("--max-subquestions", type=int, default=6)
-    q.add_argument("--max-agents", type=int, default=6)
-    q.add_argument("--max-searches", type=int, default=5, help="web searches per worker call")
-    q.add_argument("--min-citations", type=int, default=2)
-    q.add_argument("--min-domains", type=int, default=2)
-    q.add_argument("--max-usd", type=float, default=2.0, help="hard dollar cap for the run (0 = none)")
+    q.add_argument("--model", default=None, help="model for planning/synthesis (default claude-opus-5-5)")
+    q.add_argument("--worker-model", default=None, help="model for research workers (default: --model)")
+    q.add_argument("--max-subquestions", type=int, default=None)
+    q.add_argument("--max-agents", type=int, default=None)
+    q.add_argument("--max-searches", type=int, default=None, help="searches per worker call")
+    q.add_argument("--max-usd", type=float, default=None, help="hard dollar cap for the run (0 = none)")
     q.add_argument("--estimate", action="store_true", help="print the cost estimate and exit")
     q.add_argument("--no-claim-check", action="store_true", help="skip checking claims against sources")
-    q.add_argument("--no-fallbacks", action="store_true")
+    q.add_argument("--no-cache", action="store_true", help="bypass the local search/fetch cache")
+    q.add_argument("--config", default=None, help="config file (default: swarm.toml or ~/.config/swarm)")
+    q.add_argument("-v", "--verbose", action="store_true", help="print full run stats")
     q.set_defaults(fn=cmd_research)
+
+    d = sub.add_parser("doctor", help="check installation, keys and configuration")
+    d.add_argument("--online", action="store_true", help="also make one free TinyFish search")
+    d.add_argument("--config", default=None)
+    d.set_defaults(fn=cmd_doctor)
+
+    sv = sub.add_parser("serve", help="run the web UI and REST API (needs swarm[server])")
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8000)
+    sv.add_argument("--config", default=None)
+    sv.set_defaults(fn=cmd_serve)
 
     e = sub.add_parser("eval", help="evaluate deep research vs a single agent on known-answer questions")
     e.add_argument("path", nargs="?", default="evals/questions.jsonl")
@@ -319,7 +398,15 @@ def main() -> None:
     g.set_defaults(fn=cmd_gen)
 
     a = p.parse_args()
-    a.fn(a)
+    from .errors import SwarmError
+    from .research import OverBudget
+
+    try:
+        a.fn(a)
+    except (SwarmError, OverBudget, ValueError) as e:
+        sys.exit(f"error: {e}")
+    except KeyboardInterrupt:
+        sys.exit("interrupted")
 
 
 if __name__ == "__main__":

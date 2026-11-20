@@ -80,15 +80,22 @@ _WORKER_TOKENS = {"low": ((8_000, 20_000), (600, 1_500)),
 
 def estimate_research(model: str, n_subquestions: int, max_searches: int,
                       efforts: tuple[str, ...] = ("low", "medium", "high"),
-                      escalation_rate: tuple[float, float] = (0.1, 0.5)) -> Estimate:
-    """Cost and time range before any call is made (planner and synthesis included)."""
+                      escalation_rate: tuple[float, float] = (0.1, 0.5),
+                      free_search: bool = False) -> Estimate:
+    """Cost and time range before any call is made (planner and synthesis included).
+
+    `free_search`: client-side tools on a free provider (TinyFish): no per-search fee, but the
+    tool loop re-reads its growing context each turn (mostly as cheap cache reads).
+    """
     p = price_of(model)
+    fee = 0.0 if free_search else WEB_SEARCH_USD_PER_1K / 1000
+    loop_factor = 1.5 if free_search else 1.0
 
     def call(effort: str, hi: bool) -> float:
         (ilo, ihi), (olo, ohi) = _WORKER_TOKENS.get(effort, _WORKER_TOKENS["medium"])
         i, o = (ihi, ohi) if hi else (ilo, olo)
         s = max_searches if hi else max(1, max_searches // 2)
-        return (i * p.input + o * p.output) / 1e6 + s * WEB_SEARCH_USD_PER_1K / 1000
+        return (i * loop_factor * p.input + o * p.output) / 1e6 + s * fee
 
     first = efforts[0]
     second = efforts[1] if len(efforts) > 1 else first

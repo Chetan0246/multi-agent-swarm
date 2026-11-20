@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Swarm Research</title>
+<style>
+:root{--bg:#f7f7f9;--panel:#fff;--fg:#1c1c1f;--muted:#6a6a73;--line:#e3e3e8;--accent:#2a6fdb;--accent-fg:#fff;
+--ok:#1a7f4b;--err:#b42318;--radius:12px}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121214;--panel:#1b1c1f;--fg:#ececf0;
+--muted:#9d9da6;--line:#2c2d32;--accent:#7aa7ff;--accent-fg:#0b1020;--ok:#5cc98b;--err:#ff8a7a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{max-width:62rem;margin:0 auto;padding:1.5rem 16px .5rem;display:flex;align-items:baseline;gap:.75rem;flex-wrap:wrap}
+header h1{font-size:1.25rem;margin:0}header span{color:var(--muted);font-size:.9rem}
+main{max-width:62rem;margin:0 auto;padding:0 16px 3rem;display:grid;gap:1rem}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:1rem}
+textarea,input,select{width:100%;font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);
+border-radius:8px;padding:.6rem .7rem}
+textarea{min-height:5.5rem;resize:vertical}
+label{display:block;font-size:.85rem;color:var(--muted);margin:.6rem 0 .25rem}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.75rem}
+button{font:inherit;border:0;border-radius:8px;padding:.6rem 1rem;cursor:pointer;background:var(--accent);
+color:var(--accent-fg);font-weight:600}
+button.secondary{background:transparent;color:var(--accent);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:not-allowed}
+.actions{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin-top:.9rem}
+.muted{color:var(--muted);font-size:.9rem}
+details summary{cursor:pointer;color:var(--muted);margin-top:.6rem}
+#log{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:14rem;overflow:auto;white-space:pre-wrap;
+color:var(--muted);margin:0}
+.stats{display:flex;gap:.5rem;flex-wrap:wrap;margin:.25rem 0 .75rem}
+.chip{border:1px solid var(--line);border-radius:999px;padding:.15rem .6rem;font-size:.85rem}
+iframe{width:100%;height:70vh;border:1px solid var(--line);border-radius:var(--radius);background:#fff}
+.err{color:var(--err)}.ok{color:var(--ok)}
+#history li{margin:.3rem 0}#history a{color:var(--accent);cursor:pointer}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header><h1>Swarm Research</h1><span>Parallel, cited web research. Every claim is checked against its source.</span></header>
+<main>
+  <section class="panel" aria-labelledby="ask-h">
+    <h2 id="ask-h" class="hidden">Ask</h2>
+    <label for="q">Question</label>
+    <textarea id="q" placeholder="e.g. How do heat pumps compare to gas boilers in cold climates?"></textarea>
+    <div class="row">
+      <div><label for="preset">Depth</label>
+        <select id="preset"><option value="quick">Quick</option><option value="standard" selected>Standard</option>
+        <option value="deep">Deep</option></select></div>
+      <div><label for="search">Web search</label>
+        <select id="search"><option value="tinyfish" selected>TinyFish (free)</option>
+        <option value="anthropic">Claude web search (paid)</option></select></div>
+      <div><label for="kind">Sources</label>
+        <select id="kind"><option value="">Web</option><option value="news">News</option>
+        <option value="research_paper">Research papers</option></select></div>
+      <div><label for="maxusd">Cost cap (USD)</label><input id="maxusd" type="number" min="0.1" step="0.1"></div>
+    </div>
+    <details><summary>More options</summary>
+      <div class="row">
+        <div><label for="inc">Only these domains</label><input id="inc" placeholder="nature.com, nih.gov"></div>
+        <div><label for="exc">Skip these domains</label><input id="exc" placeholder="pinterest.com"></div>
+        <div><label for="recency">Last N days</label><input id="recency" type="number" min="1"></div>
+        <div><label for="lang">Language</label><input id="lang" placeholder="en"></div>
+        <div><label for="token">API token (if the server needs one)</label><input id="token" type="password"></div>
+        <div><label><input id="mock" type="checkbox" style="width:auto"> Offline demo (no API calls)</label></div>
+      </div>
+    </details>
+    <div class="actions">
+      <button id="go">Research</button>
+      <span id="estimate" class="muted" aria-live="polite"></span>
+    </div>
+  </section>
+
+  <section id="progress" class="panel hidden" aria-live="polite">
+    <strong id="status">Working…</strong>
+    <pre id="log"></pre>
+  </section>
+
+  <section id="result" class="hidden">
+    <div class="stats" id="stats"></div>
+    <iframe id="report" sandbox="allow-popups allow-popups-to-escape-sandbox" title="Research report"></iframe>
+    <div class="actions">
+      <button class="secondary" data-fmt="md">Download .md</button>
+      <button class="secondary" data-fmt="html">Download .html</button>
+      <button class="secondary" data-fmt="json">Download .json</button>
+    </div>
+    <div class="panel" style="margin-top:1rem">
+      <label for="fq">Follow-up (reuses this report's findings)</label>
+      <input id="fq" placeholder="e.g. What about running costs?">
+      <div class="actions"><button id="fgo">Ask follow-up</button></div>
+    </div>
+  </section>
+
+  <section class="panel"><strong>Recent</strong><ul id="history" class="muted"></ul></section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let current = null;
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+                set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+$("token").value = store.get("swarm-token") || "";
+$("token").addEventListener("change", () => store.set("swarm-token", $("token").value));
+
+function headers(json) {
+  const h = json ? { "Content-Type": "application/json" } : {};
+  if ($("token").value) h.Authorization = "Bearer " + $("token").value;
+  return h;
+}
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: headers(!!opts.body) });
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch {} throw new Error(m); }
+  return r;
+}
+const csv = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
+
+async function estimate() {
+  try {
+    const r = await (await api(`/api/estimate?preset=${$("preset").value}&search=${$("search").value}`)).json();
+    $("estimate").textContent = `Estimated ${r.text} · cap $${r.cap_usd.toFixed(2)}`;
+    if (!$("maxusd").value) $("maxusd").placeholder = r.cap_usd.toFixed(2);
+  } catch (e) { $("estimate").textContent = ""; }
+}
+["preset", "search"].forEach((id) => $(id).addEventListener("change", estimate));
+
+function log(line) { $("log").textContent += line + "\n"; $("log").scrollTop = 1e9; }
+
+function describe(ev) {
+  if (ev.event === "plan") return `planned ${ev.unique} sub-questions · ${ev.agents} workers`;
+  if (ev.event === "batch") return `worker finished · effort ${["low","medium","high"][ev.rung] || ev.rung} · verified ${ev.ok}/${ev.size} · ${ev.latency}s`;
+  if (ev.event === "status") return ev.status;
+  if (ev.event === "done") return "done";
+  if (ev.event === "error") return "error: " + ev.error;
+  return ev.event;
+}
+
+async function watch(id) {
+  current = id;
+  $("progress").classList.remove("hidden"); $("result").classList.add("hidden");
+  $("log").textContent = ""; $("status").textContent = "Working…"; $("status").className = "";
+  // EventSource can't send headers, so poll when a token is set; stream otherwise.
+  if ($("token").value) {
+    let seen = 0;
+    for (;;) {
+      const j = await (await api(`/api/jobs/${id}`)).json();
+      j.events.slice(seen).forEach((e) => log(describe(e))); seen = j.events.length;
+      if (j.status === "done" || j.status === "error") return finish(j);
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+  const es = new EventSource(`/api/jobs/${id}/events`);
+  es.onmessage = (m) => log(describe(JSON.parse(m.data)));
+  es.addEventListener("end", async () => { es.close(); finish(await (await api(`/api/jobs/${id}`)).json()); });
+  es.onerror = () => { es.close(); setTimeout(async () => finish(await (await api(`/api/jobs/${id}`)).json()), 500); };
+}
+
+async function finish(j) {
+  $("go").disabled = false; $("fgo").disabled = false; history();
+  if (j.status === "error") { $("status").textContent = "Failed: " + j.error; $("status").className = "err"; return; }
+  if (j.status !== "done") return;
+  $("status").textContent = "Done"; $("status").className = "ok";
+  const s = j.stats || {};
+  const chips = [
+    s.usd != null && `$${s.usd.toFixed(2)}`, s.wall_time_s != null && `${Math.round(s.wall_time_s)}s`,
+    s["verified_%"] != null && `${s["verified_%"]}% findings verified`,
+    s["claim_support_%"] != null && `${s["claim_support_%"]}% claims supported`,
+    s.sources != null && `${s.sources} sources`, s.injection_excluded && `${s.injection_excluded} excluded (injection)`,
+  ].filter(Boolean);
+  $("stats").innerHTML = ""; chips.forEach((c) => { const el = document.createElement("span");
+    el.className = "chip"; el.textContent = c; $("stats").appendChild(el); });
+  $("report").srcdoc = await (await api(`/api/jobs/${j.id}/report?format=html`)).text();
+  $("result").classList.remove("hidden");
+}
+
+$("go").addEventListener("click", async () => {
+  const q = $("q").value.trim(); if (q.length < 3) { $("q").focus(); return; }
+  const body = { question: q, preset: $("preset").value, search: $("search").value, mock: $("mock").checked,
+    include_domains: csv($("inc").value), recency_days: +$("recency").value || null,
+    kind: $("kind").value || null, language: $("lang").value || null, max_usd: +$("maxusd").value || null };
+  if ($("exc").value) body.exclude_domains = csv($("exc").value);
+  $("go").disabled = true;
+  try { const { id } = await (await api("/api/research", { method: "POST", body: JSON.stringify(body) })).json(); watch(id); }
+  catch (e) { $("go").disabled = false; $("progress").classList.remove("hidden");
+    $("status").textContent = "Could not start: " + e.message; $("status").className = "err"; }
+});
+
+$("fgo").addEventListener("click", async () => {
+  const q = $("fq").value.trim(); if (!q || !current) return;
+  $("fgo").disabled = true;
+  try { const { id } = await (await api(`/api/jobs/${current}/follow-up`, { method: "POST",
+      body: JSON.stringify({ question: q }) })).json(); $("fq").value = ""; watch(id); }
+  catch (e) { $("fgo").disabled = false; alert(e.message); }
+});
+
+document.querySelectorAll("[data-fmt]").forEach((b) => b.addEventListener("click", async () => {
+  if (!current) return;
+  const fmt = b.dataset.fmt, blob = await (await api(`/api/jobs/${current}/report?format=${fmt}`)).blob();
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `report-${current}.${fmt}`;
+  a.click(); URL.revokeObjectURL(a.href);
+}));
+
+async function history() {
+  try {
+    const jobs = await (await api("/api/jobs")).json();
+    $("history").innerHTML = "";
+    jobs.slice(0, 15).forEach((j) => {
+      const li = document.createElement("li"), a = document.createElement("a");
+      a.textContent = j.question.split("\n")[0].slice(0, 100); a.onclick = () => { current = j.id; return j.status === "done" ? finish(j) : watch(j.id); };
+      li.appendChild(a); li.append(` · ${j.status}`); $("history").appendChild(li);
+    });
+    if (!jobs.length) $("history").textContent = "No research yet.";
+  } catch (e) { $("history").textContent = e.message; }
+}
+estimate(); history();
+</script>
+</body>
+</html>

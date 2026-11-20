@@ -1,5 +1,44 @@
 # Changelog
 
+## 3.0.0 — first public release
+**Breaking:** the default web search provider is now TinyFish (free). Set `TINYFISH_API_KEY`,
+or pass `--search anthropic` to keep Claude's server-side search.
+
+- **Free search and fetch:** TinyFish Search and Fetch as Claude client-side tools, with a
+  shared client-side rate limiter (30 searches and 150 page fetches per minute).
+  - Retries on 429 and 5xx; clear errors for a bad key and for an exhausted daily allowance.
+  - Search fees drop from $10 per 1,000 searches to $0.
+- **Quote grounding:** workers return verbatim quotes, and code checks each one against the
+  text the worker retrieved. Unmatched quotes are dropped and counted.
+- **Your documents as sources:** `--docs` for txt, md, html and pdf files, searched locally
+  with BM25. `--docs-only` researches your files without the web.
+- **Presets:** `--preset quick|standard|deep`, each with its own default cost cap.
+- **Source filters:** `--include-domains`, `--exclude-domains` (pinterest.com and quora.com are
+  excluded by default), `--recency-days`, `--news`, `--papers` and `--language`.
+- **Follow-ups:** `--follow-up report.json` keeps the earlier findings, researches only new
+  sub-questions, and rewrites the report.
+- **Exports:**
+  - Markdown, JSON (round-trips for follow-ups), and self-contained HTML;
+  - the HTML has hover-over source quotes, a strict Content Security Policy, and escapes
+    everything.
+- **Local cache:** search and fetch results are kept in SQLite, so repeats cost nothing and
+  use no quota.
+- **Web UI and REST API (`swarm serve`):**
+  - jobs run in the background, with live progress over Server-Sent Events;
+  - follow-ups, history, downloads, and finished jobs persisted to disk;
+  - optional bearer token, and a server-side cost cap on every job;
+  - a Docker image.
+- **Config file:** `swarm.toml` or `~/.config/swarm/config.toml`, plus `SWARM_*` environment
+  variables. Flags override the environment, and the environment overrides the file.
+- **Errors and setup:** clear error messages with fixes, and `swarm doctor [--online]` to check
+  your setup.
+- **Launch packaging:**
+  - PyPI metadata and extras (`[server]`, `[pdf]`, `[all]`);
+  - release workflow (trusted publishing on a tag) and docs site (MkDocs to GitHub Pages);
+  - Dependabot, pre-commit, issue and PR templates, CONTRIBUTING, CODE_OF_CONDUCT and SECURITY;
+  - CI now reports coverage and installs the built wheel.
+- 14 new tests (61 in total), all offline.
+
 ## 2.3.0 — launch blockers: SDK 2.x, cost, claim checking, injection defences, evaluation
 - **SDK 2.x:** moved to `anthropic>=2.12,<3`, which sends API version `2026-10-21` and the API
   key as `Authorization: Bearer`.

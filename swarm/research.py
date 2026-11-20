@@ -28,10 +28,12 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from .backends import BatchResponse, CallUsage, RateLimited, TransientError, classify_429
+from .errors import MissingKey, missing_anthropic_key
 from .orchestrator import RunReport, Swarm
 from .planner import PlanConfig, Rung
 from .pricing import WEB_SEARCH_USD_PER_1K, estimate_research, price_of, usage_usd, usd_to_billed_tokens
 from .safety import DATA_ONLY_RULE, injection_flags, sanitize_report
+from .search.base import SearchFilters, SearchProvider, normalize, quote_is_grounded
 from .task import Task
 
 # ----------------------------------------------------------------------------- types
@@ -45,6 +47,8 @@ class Citation:
 
     @property
     def domain(self) -> str:
+        if self.url.startswith("file://"):  # each local document counts as its own source
+            return self.url.split("#", 1)[0].rsplit("/", 1)[-1]
         host = urlparse(self.url).netloc.lower()
         return host[4:] if host.startswith("www.") else host
 
@@ -127,6 +131,78 @@ WORKER_SYSTEM = (
     "disagree, say so. If you cannot find reliable information, say exactly what is missing "
     "rather than guessing. " + DATA_ONLY_RULE
 )
+
+TOOL_WORKER_SYSTEM = (
+    "You are one research worker in a team. Answer only your assigned sub-question; other "
+    "workers cover the rest of the overall question, which is given for context only. Use the "
+    "tools: search, then read the most promising sources (primary and recent first). Cross-check "
+    "key facts across at least two independent sources. You have a limited number of tool turns, "
+    "so batch several searches or reads into one turn when you can.\n\n"
+    "Final answer: JSON with `answer` (a dense factual answer of 80-250 words with specific "
+    "numbers, names and dates; if sources disagree say so; if information is missing say what) "
+    "and `sources`: for each source you rely on, its `url` and a `quote` copied VERBATIM from "
+    "the text a tool returned (one or two sentences, max 300 characters). Quotes are checked "
+    "against the retrieved text by code, and any quote that is not verbatim is discarded. "
+    + DATA_ONLY_RULE
+)
+
+TOOL_WORKER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "sources": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"url": {"type": "string"}, "quote": {"type": "string"}},
+            "required": ["url", "quote"], "additionalProperties": False}},
+    },
+    "required": ["answer", "sources"],
+    "additionalProperties": False,
+}
+
+
+def _tool_defs(web: bool, docs: bool) -> list[dict]:
+    tools: list[dict] = []
+    if web:
+        tools += [
+            {"name": "web_search", "description": "Search the web. Returns up to 10 results with "
+             "URL, title and snippet. Use `kind` news for recent events, research_paper for studies.",
+             "input_schema": {"type": "object", "properties": {
+                 "query": {"type": "string"},
+                 "kind": {"type": "string", "enum": ["web", "news", "research_paper"]}},
+                 "required": ["query"]}},
+            {"name": "web_fetch", "description": "Read up to 3 web pages as text (markdown). Use "
+             "URLs from search results.",
+             "input_schema": {"type": "object", "properties": {
+                 "urls": {"type": "array", "items": {"type": "string"}, "maxItems": 3}},
+                 "required": ["urls"]}},
+        ]
+    if docs:
+        tools += [
+            {"name": "search_documents", "description": "Search the user's own documents. Returns "
+             "passages with file:// URLs.",
+             "input_schema": {"type": "object", "properties": {"query": {"type": "string"}},
+                              "required": ["query"]}},
+            {"name": "read_document", "description": "Read up to 3 document passages by their "
+             "file:// URL.",
+             "input_schema": {"type": "object", "properties": {
+                 "urls": {"type": "array", "items": {"type": "string"}, "maxItems": 3}},
+                 "required": ["urls"]}},
+        ]
+    return tools
+
+
+def _parse_json_obj(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", text, re.S)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
+    return {}
+
 
 SYNTH_SYSTEM = (
     "You write a research report from findings gathered by research workers, given inside "
@@ -305,16 +381,48 @@ class ResearchConfig:
     min_domains: int = 2
     max_usd: float | None = 2.00  # hard cap for the whole run; None = no cap
     check_claims: bool = True
+    free_search: bool = False  # client-side tools on a free provider: no per-search fee
+    max_tool_turns: int = 6  # client-side tool loop turns per worker call
+
+
+PRESETS: dict[str, dict[str, Any]] = {
+    # Cheap and fast: fewer, shallower workers, no claim check.
+    "quick": {"max_subquestions": 3, "max_agents": 3, "efforts": ("low", "medium"), "max_searches": 3,
+              "max_tool_turns": 4, "check_claims": False, "max_usd": 0.75},
+    "standard": {"max_subquestions": 5, "max_agents": 5, "efforts": ("low", "medium", "high"),
+                 "max_searches": 5, "max_tool_turns": 6, "check_claims": True, "max_usd": 2.00},
+    # Broad and thorough: more sub-questions, start at medium effort, more reading.
+    "deep": {"max_subquestions": 8, "max_agents": 8, "efforts": ("medium", "high"), "max_searches": 8,
+             "max_tool_turns": 10, "check_claims": True, "max_usd": 6.00},
+}
+
+
+def config_from(preset: str = "standard", **overrides: Any) -> ResearchConfig:
+    """Preset values, then any non-None override."""
+    if preset not in PRESETS:
+        raise ValueError(f"unknown preset {preset!r}; choose one of {', '.join(PRESETS)}")
+    values = {**PRESETS[preset], **{k: v for k, v in overrides.items() if v is not None}}
+    return ResearchConfig(**values)
 
 
 async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | None = None,
-                        on_event=None) -> ResearchReport:
+                        on_event=None, prior: ResearchReport | None = None) -> ResearchReport:
+    """Run deep research. With `prior` (an earlier report), this is a follow-up: only new
+    sub-questions are researched, and the report is rewritten from old + new findings."""
     cfg = cfg or ResearchConfig()
     loop = asyncio.get_running_loop()
     t0 = loop.time()
+    plan_question = question
+    report_question = question
+    if prior is not None:
+        done = "\n".join(f"- {f.question}" for f in prior.findings)
+        plan_question = (f"Follow-up request: {question}\n\nOriginal question: {prior.question}\n"
+                         f"Already researched (do not repeat these):\n{done}")
+        report_question = f"{prior.question}\n\nFollow-up request: {question}"
 
     # 0. estimate and cap ----------------------------------------------------------------
-    est = estimate_research(cfg.model, cfg.max_subquestions, cfg.max_searches, cfg.efforts)
+    est = estimate_research(cfg.model, cfg.max_subquestions, cfg.max_searches, cfg.efforts,
+                            free_search=cfg.free_search)
     if cfg.max_usd is not None and est.low_usd > cfg.max_usd:
         raise OverBudget(f"estimated {est} exceeds the ${cfg.max_usd:.2f} cap; raise --max-usd "
                          f"or lower --max-subquestions")
@@ -323,17 +431,18 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
                      if cfg.max_usd is not None else None)
 
     # 1. plan ----------------------------------------------------------------------------
-    subs, plan_usage = await llm.plan(question, cfg.max_subquestions, cfg.model, cfg.plan_effort)
+    subs, plan_usage = await llm.plan(plan_question, cfg.max_subquestions, cfg.model, cfg.plan_effort)
     usd = usage_usd(cfg.model, plan_usage)
     subs = [s for s in subs if str(s.get("question", "")).strip()][: cfg.max_subquestions]
     if not subs:
         subs = [{"question": question, "difficulty": 2}]
     check = citation_validator(cfg.min_citations, cfg.min_domains)
-    tasks = [Task(f"q{i + 1}", s["question"], max(1, min(3, int(s.get("difficulty", 2)))),
+    offset = len(prior.findings) if prior is not None else 0
+    tasks = [Task(f"q{offset + i + 1}", s["question"], max(1, min(3, int(s.get("difficulty", 2)))),
                   validator=check) for i, s in enumerate(subs)]
 
     # 2. parallel research through the swarm engine ---------------------------------------
-    backend = ResearchBackend(llm, question)
+    backend = ResearchBackend(llm, report_question)
     pcfg = PlanConfig(
         ladder=tuple(Rung(cfg.model, e) for e in cfg.efforts),
         adaptive=False, static_batch=1, max_batch=1,  # one web-research call per sub-question
@@ -349,6 +458,16 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
     sources: list[Citation] = []
     index: dict[str, int] = {}
     quotes: dict[int, list[str]] = {}
+    for f in (prior.findings if prior is not None else []):  # follow-up: keep earlier findings
+        findings.append(f)
+        if f.flags:
+            continue
+        for c in f.citations:
+            if c.url not in index:
+                sources.append(c)
+                index[c.url] = len(sources)
+            if c.quote:
+                quotes.setdefault(index[c.url], []).append(c.quote)
     for t in tasks:
         r = run.results[t.id]
         try:
@@ -383,7 +502,7 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
     findings_block = "<findings>\n" + "\n\n".join(blocks) + "\n</findings>\n\nSource list:\n" + listing
 
     # 4. synthesis + reference check -------------------------------------------------------
-    md, synth_usage = await llm.synthesize(question, findings_block, len(sources), cfg.model,
+    md, synth_usage = await llm.synthesize(report_question, findings_block, len(sources), cfg.model,
                                            cfg.synth_effort)
     usd += usage_usd(cfg.model, synth_usage)
     md, integrity = check_references(md, len(sources))
@@ -437,7 +556,7 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
     stats = {
         "subquestions": len(tasks),
         "verified_findings": sum(f.verified for f in findings),
-        "verified_%": round(100 * sum(f.verified for f in findings) / max(1, len(tasks)), 1),
+        "verified_%": round(100 * sum(f.verified for f in findings) / max(1, len(findings)), 1),
         "agents": run.agents,
         "worker_calls": run.calls,
         "web_searches": backend.searches,
@@ -449,13 +568,16 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
         "usd_cap": cfg.max_usd,
         "budget_stops": run.counters.get("budget_stops", 0),
         "wall_time_s": round(loop.time() - t0, 2),
-        "escalated": sum(1 for f in findings if f.effort != cfg.efforts[0]),
+        "escalated": sum(1 for f in findings[len(prior.findings) if prior else 0:]
+                         if f.effort != cfg.efforts[0]),
+        "followup_of": prior.question if prior is not None else None,
+        **({"search_" + k: v for k, v in getattr(llm, "search_stats", {}).items()}),
         "injection_excluded": len(excluded),
         "unsafe_markup_removed": sanitized,
         **integrity,
         **claim_stats,
     }
-    return ResearchReport(question, md, findings, sources, stats)
+    return ResearchReport(report_question if prior is not None else question, md, findings, sources, stats)
 
 
 # ----------------------------------------------------------------------------- Claude
@@ -485,7 +607,12 @@ class AnthropicResearchLLM:
     Anthropic's servers inside one request (resumed on `pause_turn`)."""
 
     def __init__(self, max_searches: int = 5, max_fetches: int = 3, use_fallbacks: bool = True,
-                 timeout: float = 600.0, max_continuations: int = 4):
+                 timeout: float = 600.0, max_continuations: int = 4,
+                 search: SearchProvider | None = None, docs: SearchProvider | None = None,
+                 filters: SearchFilters | None = None, max_tool_turns: int = 6,
+                 page_chars: int = 8000, worker_model: str | None = None, language: str | None = None):
+        """`search`/`docs` given -> client-side tools (e.g. free TinyFish, local files);
+        neither -> Claude's server-side web search and fetch ($10 per 1,000 searches)."""
         import anthropic
 
         self._a = anthropic
@@ -494,6 +621,26 @@ class AnthropicResearchLLM:
         self.max_fetches = max_fetches
         self.use_fallbacks = use_fallbacks
         self.max_continuations = max_continuations
+        self.search = search
+        self.docs = docs
+        self.filters = filters or SearchFilters()
+        self.max_tool_turns = max_tool_turns
+        self.page_chars = page_chars
+        self.worker_model = worker_model
+        self.language = language
+        self.stats = {"ungrounded_quotes_dropped": 0, "tool_calls": 0}
+
+    @property
+    def paid_search(self) -> bool:
+        return self.search is None and self.docs is None
+
+    @property
+    def search_stats(self) -> dict:
+        out = dict(self.stats)
+        for p in (self.search, self.docs):
+            for k, v in (getattr(p, "stats", None) or {}).items():
+                out[f"{getattr(p, 'name', 'provider')}_{k}"] = v
+        return out
 
     async def _create(self, **kw):
         a = self._a
@@ -504,12 +651,19 @@ class AnthropicResearchLLM:
             return await self.client.messages.create(**kw)
         except a.RateLimitError as e:
             raise classify_429(e.body, getattr(e.response, "headers", None)) from e
+        except a.AuthenticationError as e:
+            raise MissingKey("Anthropic rejected the credentials (401)",
+                             "check ANTHROPIC_API_KEY or run `ant auth login`") from e
         except a.APIStatusError as e:
             if e.status_code >= 500:
                 raise TransientError(f"HTTP {e.status_code}") from e
             raise
         except (a.APIConnectionError, a.APITimeoutError) as e:
             raise TransientError(type(e).__name__) from e
+        except TypeError as e:  # the SDK raises this when no credential can be resolved
+            if "auth" in str(e).lower() or "api_key" in str(e).lower():
+                raise missing_anthropic_key() from e
+            raise
 
     async def plan(self, question, max_subquestions, model, effort):
         msg = await self._create(
@@ -528,6 +682,9 @@ class AnthropicResearchLLM:
             return [], usage
 
     async def investigate(self, question, sub_question, model, effort):
+        model = self.worker_model or model
+        if not self.paid_search:
+            return await self._investigate_with_tools(question, sub_question, model, effort)
         tools = [
             {"type": "web_search_20260209", "name": "web_search", "max_uses": self.max_searches},
             {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": self.max_fetches,
@@ -563,6 +720,84 @@ class AnthropicResearchLLM:
                     cites.append(Citation(url, getattr(c, "title", "") or "",
                                           (getattr(c, "cited_text", "") or "")[:300]))
         return "".join(text_parts).strip(), cites, usage, searches
+
+    async def _run_tool(self, name: str, args: dict, corpus: dict[str, tuple[str, str]]) -> str:
+        """Execute one client-side tool; record returned text in `corpus` for quote checks."""
+        self.stats["tool_calls"] += 1
+        try:
+            if name in ("web_search", "search_documents"):
+                provider = self.search if name == "web_search" else self.docs
+                assert provider is not None
+                f = self.filters
+                if name == "web_search" and args.get("kind") in ("news", "research_paper"):
+                    f = SearchFilters(**{**f.__dict__, "domain_type": args["kind"]})
+                hits = await provider.search(str(args.get("query", ""))[:400], f)
+                lines = []
+                for i, h in enumerate(hits[:10], 1):
+                    corpus.setdefault(h.url, (h.title, ""))
+                    t, txt = corpus[h.url]
+                    corpus[h.url] = (t or h.title, txt + "\n" + h.snippet)
+                    lines.append(f"{i}. {h.title}\n   URL: {h.url}\n   {h.snippet}")
+                body = "\n".join(lines) or "No results."
+            else:
+                provider = self.search if name == "web_fetch" else self.docs
+                assert provider is not None
+                urls = [str(u) for u in (args.get("urls") or [])][:3]
+                pages = await provider.fetch(urls)
+                parts = []
+                for pg in pages:
+                    if pg.error:
+                        parts.append(f"URL: {pg.url}\nERROR: {pg.error}")
+                        continue
+                    text = pg.text[: self.page_chars]
+                    t, prev = corpus.get(pg.url, (pg.title, ""))
+                    corpus[pg.url] = (pg.title or t, prev + "\n" + text)
+                    parts.append(f"URL: {pg.url}\nTITLE: {pg.title}\n{text}")
+                body = "\n\n---\n\n".join(parts) or "Nothing fetched."
+        except Exception as e:  # tool errors go back to the model, not up the stack
+            return f"Tool error: {e}"
+        return f"<untrusted_content>\n{body}\n</untrusted_content>"
+
+    async def _investigate_with_tools(self, question, sub_question, model, effort):
+        tools = _tool_defs(web=self.search is not None, docs=self.docs is not None)
+        lang = f" Write the answer in {self.language}." if self.language else ""
+        messages: list[dict[str, Any]] = [{"role": "user", "content":
+                                           f"Overall question (context only): {question}\n\n"
+                                           f"Your sub-question: {sub_question}{lang}"}]
+        usage = CallUsage()
+        corpus: dict[str, tuple[str, str]] = {}  # url -> (title, retrieved text)
+        msg = None
+        for turn in range(self.max_tool_turns + 1):
+            last = turn == self.max_tool_turns
+            msg = await self._create(
+                model=model, max_tokens=16000, system=TOOL_WORKER_SYSTEM, messages=messages,
+                tools=tools, tool_choice={"type": "none"} if last else {"type": "auto"},
+                cache_control={"type": "ephemeral"},  # the growing conversation is re-read each turn
+                output_config={"effort": effort,
+                               "format": {"type": "json_schema", "schema": TOOL_WORKER_SCHEMA}})
+            u, _ = _usage(msg)
+            _add(usage, u)
+            if msg.stop_reason != "tool_use":
+                break
+            calls = [b for b in msg.content if b.type == "tool_use"]
+            outputs = await asyncio.gather(*(self._run_tool(b.name, dict(b.input), corpus) for b in calls))
+            messages.append({"role": "assistant", "content": msg.content})
+            messages.append({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": b.id, "content": out}
+                for b, out in zip(calls, outputs)]})
+        if msg is None or msg.stop_reason == "refusal":
+            return "", [], usage, 0
+        data = _parse_json_obj("".join(b.text for b in msg.content if b.type == "text"))
+        norm = {u: (t, normalize(x)) for u, (t, x) in corpus.items()}
+        cites: list[Citation] = []
+        for s in data.get("sources", []) or []:
+            url, quote = str(s.get("url", "")), str(s.get("quote", ""))[:400]
+            src = norm.get(url)
+            if src and quote_is_grounded(quote, src[1]):
+                cites.append(Citation(url, src[0], quote))
+            else:
+                self.stats["ungrounded_quotes_dropped"] += 1
+        return str(data.get("answer", "")).strip(), cites, usage, 0  # no per-search fee
 
     async def synthesize(self, question, findings_block, n_sources, model, effort):
         msg = await self._create(
