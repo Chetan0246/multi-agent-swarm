@@ -3,6 +3,7 @@
   python -m swarm bench [--n 600 --seeds 3]   offline benchmark (simulated backend)
   python -m swarm run tasks.jsonl [options]   process a JSONL workload on Claude
   python -m swarm research "question" --out report.md   deep research with cited report
+  python -m swarm eval [questions.jsonl] [--mock]       evaluate vs a single-agent baseline
   python -m swarm gen out.jsonl --n 50        write a sample checkable workload
 """
 from __future__ import annotations
@@ -142,13 +143,28 @@ def cmd_run(a: argparse.Namespace) -> None:
 def cmd_research(a: argparse.Namespace) -> None:
     import asyncio
 
-    from .research import AnthropicResearchLLM, MockResearchLLM, ResearchConfig, ResearchLLM, deep_research
+    from .pricing import estimate_research
+    from .research import (
+        AnthropicResearchLLM,
+        MockResearchLLM,
+        OverBudget,
+        ResearchConfig,
+        ResearchLLM,
+        deep_research,
+    )
 
-    llm: ResearchLLM = MockResearchLLM() if a.mock else AnthropicResearchLLM(
-        max_searches=a.max_searches, use_fallbacks=not a.no_fallbacks)
     cfg = ResearchConfig(model=a.model, efforts=tuple(a.efforts.split(",")),
                          max_subquestions=a.max_subquestions, max_agents=a.max_agents,
-                         min_citations=a.min_citations, min_domains=a.min_domains, token_budget=a.budget)
+                         max_searches=a.max_searches, min_citations=a.min_citations,
+                         min_domains=a.min_domains, max_usd=a.max_usd or None,
+                         check_claims=not a.no_claim_check)
+    est = estimate_research(cfg.model, cfg.max_subquestions, cfg.max_searches, cfg.efforts)
+    cap = f"cap ${cfg.max_usd:.2f}" if cfg.max_usd else "no cap"
+    print(f"estimate: {est} ({cap}){' [mock: no real spend]' if a.mock else ''}", file=sys.stderr)
+    if a.estimate:
+        return
+    llm: ResearchLLM = MockResearchLLM() if a.mock else AnthropicResearchLLM(
+        max_searches=a.max_searches, use_fallbacks=not a.no_fallbacks)
 
     def progress(kind: str, data: dict) -> None:
         if kind == "plan":
@@ -158,13 +174,68 @@ def cmd_research(a: argparse.Namespace) -> None:
             print(f"  worker done: effort rung {data['rung']}, verified {data['ok']}/{data['size']}, "
                   f"{data['latency']}s", file=sys.stderr)
 
-    report = asyncio.run(deep_research(a.question, llm, cfg, on_event=progress))
+    try:
+        report = asyncio.run(deep_research(a.question, llm, cfg, on_event=progress))
+    except OverBudget as e:
+        sys.exit(f"error: {e}")
     if a.out:
         Path(a.out).write_text(report.markdown)
         print(f"wrote {a.out}", file=sys.stderr)
     else:
         print(report.markdown)
     print(json.dumps(report.stats, indent=2), file=sys.stderr)
+    s = report.stats
+    print(f"cost ${s['usd']:.2f} (estimate {s['usd_estimate']}), {s['wall_time_s']}s, "
+          f"{s['verified_%']}% findings verified, claim support {s.get('claim_support_%', 'n/a')}%",
+          file=sys.stderr)
+
+
+def cmd_eval(a: argparse.Namespace) -> None:
+    import asyncio
+
+    from .evaluate import estimate_eval, load_items, results_json, run_eval, summarize, to_markdown
+    from .research import AnthropicResearchLLM, MockResearchLLM, ResearchConfig, ResearchLLM
+
+    items = load_items(a.path)[: a.limit or None]
+    cfg = ResearchConfig(model=a.model, max_subquestions=a.max_subquestions,
+                         max_searches=a.max_searches, max_usd=a.max_usd_per_question or None)
+    with_single = not a.no_single
+    lo, hi = estimate_eval(len(items), cfg, with_single)
+    cap = f"cap ${a.max_usd_total:.2f}" if a.max_usd_total else "no total cap"
+    print(f"{len(items)} questions, systems: swarm{' + single' if with_single else ''}; "
+          f"estimate ~${lo:.2f}-${hi:.2f} ({cap}){' [mock: no real spend]' if a.mock else ''}",
+          file=sys.stderr)
+    if a.estimate:
+        return
+    swarm_llm: ResearchLLM
+    single_llm: ResearchLLM | None
+    if a.mock:
+        # Offline plumbing check: the mock "knows" some answers so scoring is exercised.
+        swarm_llm = MockResearchLLM(answers={it.question: it.answers[0]
+                                             for i, it in enumerate(items) if i % 3})
+        single_llm = MockResearchLLM(answers={it.question: it.answers[0] for i, it in enumerate(items)
+                                              if i % 2}) if with_single else None
+    else:
+        swarm_llm = AnthropicResearchLLM(max_searches=a.max_searches)
+        # Compute-matched on searches: the single agent may use as many as all workers together.
+        single_llm = AnthropicResearchLLM(max_searches=a.max_searches * a.max_subquestions) \
+            if with_single else None
+
+    def progress(item, results, spent):
+        done = {r.item_id for r in results}
+        print(f"  [{len(done)}/{len(items)}] {item.id}: " + ", ".join(
+            f"{r.system} {'ok' if r.correct else 'miss'}" for r in results if r.item_id == item.id)
+            + f"  (spent ${spent:.2f})", file=sys.stderr)
+
+    results = asyncio.run(run_eval(items, swarm_llm, single_llm, cfg, a.max_usd_total or None,
+                                   a.concurrency, progress))
+    summary = summarize(results)
+    md = to_markdown(summary, results)
+    print(md)
+    if a.out:
+        Path(a.out).write_text(json.dumps({"summary": summary, "results": json.loads(results_json(results)),
+                                           "mock": a.mock, "model": a.model}, indent=2))
+        print(f"wrote {a.out}", file=sys.stderr)
 
 
 def cmd_gen(a: argparse.Namespace) -> None:
@@ -219,9 +290,27 @@ def main() -> None:
     q.add_argument("--max-searches", type=int, default=5, help="web searches per worker call")
     q.add_argument("--min-citations", type=int, default=2)
     q.add_argument("--min-domains", type=int, default=2)
-    q.add_argument("--budget", type=float, default=None, help="max billed-equivalent tokens for workers")
+    q.add_argument("--max-usd", type=float, default=2.0, help="hard dollar cap for the run (0 = none)")
+    q.add_argument("--estimate", action="store_true", help="print the cost estimate and exit")
+    q.add_argument("--no-claim-check", action="store_true", help="skip checking claims against sources")
     q.add_argument("--no-fallbacks", action="store_true")
     q.set_defaults(fn=cmd_research)
+
+    e = sub.add_parser("eval", help="evaluate deep research vs a single agent on known-answer questions")
+    e.add_argument("path", nargs="?", default="evals/questions.jsonl")
+    e.add_argument("--mock", action="store_true", help="offline plumbing check, no API calls")
+    e.add_argument("--model", default="claude-opus-5-5")
+    e.add_argument("--limit", type=int, default=0, help="only the first N questions")
+    e.add_argument("--max-subquestions", type=int, default=4)
+    e.add_argument("--max-searches", type=int, default=5)
+    e.add_argument("--max-usd-per-question", type=float, default=2.0)
+    e.add_argument("--max-usd-total", type=float, default=10.0,
+                   help="stop once this much is spent (0 = none)")
+    e.add_argument("--concurrency", type=int, default=2, help="questions in flight at once")
+    e.add_argument("--no-single", action="store_true", help="skip the single-agent baseline")
+    e.add_argument("--estimate", action="store_true", help="print the cost estimate and exit")
+    e.add_argument("--out", default=None, help="write summary and per-question results as JSON")
+    e.set_defaults(fn=cmd_eval)
 
     g = sub.add_parser("gen", help="write a sample workload")
     g.add_argument("path")

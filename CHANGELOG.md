@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.3.0 — launch blockers: SDK 2.x, cost, claim checking, injection defences, evaluation
+- **SDK 2.x:** moved to `anthropic>=2.12,<3`, which sends API version `2026-10-21` and the API
+  key as `Authorization: Bearer`.
+  - The code needed no request changes: it sends no sampling parameters, puts no documents
+    in assistant turns, and only ever sends citations back on Claude's own turns.
+  - The test mocks moved from `httpx` to `httpx2`, and `fallbacks` is now a typed parameter.
+  - The SDK itself is now licensed Apache 2.0 (it was MIT); this project stays MIT.
+  - Migration guide: https://platform.claude.com/docs/en/api/migration-2026-10-21
+- **Cost:**
+  - list-price module (`swarm/pricing.py`);
+  - a dollar estimate before each run (`--estimate`) and the actual cost after it;
+  - a hard dollar cap (`--max-usd`, default $2) that also counts web-search fees.
+- **Claim check:** every cited sentence of the report is judged against the source excerpts
+  it cites, batched through the engine. Unsupported or partly supported sentences are
+  marked inline, and the report states its support rate.
+- **Prompt-injection defences** (`swarm/safety.py`):
+  - prompts treat web content as data, not instructions;
+  - findings with injection markers are excluded from synthesis and named in the report;
+  - the report is sanitised: no images, no HTML, and links only to cited sources.
+- **Evaluation:** `swarm eval` compares the swarm with a single agent given the same search
+  allowance, on known-answer questions (starter set in `evals/`). It is scored
+  deterministically, with a total dollar cap.
+- 13 new tests (47 in total).
+
 ## 2.2.0 — deep research
 - New `swarm research "question"` command. A planner splits the question into independent
   sub-questions, and parallel Claude workers research them with server-side web search and

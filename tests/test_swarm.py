@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-import httpx
+import httpx2
 
 from swarm.backends import (
     AnthropicBackend,
@@ -321,15 +321,19 @@ def test_anthropic_backend_request_shape():
     def handler(req):
         seen["body"] = json.loads(req.content)
         seen["beta"] = req.headers.get("anthropic-beta")
-        return httpx.Response(200, json=_msg([{"id": "a", "answer": "42", "confidence": 0.8}]))
+        seen["version"] = req.headers.get("anthropic-version")
+        seen["auth"] = req.headers.get("authorization", "")
+        return httpx2.Response(200, json=_msg([{"id": "a", "answer": "42", "confidence": 0.8}]))
 
     be = AnthropicBackend(shared_context="DOC " * 50)
     be.client = anthropic.AsyncAnthropic(api_key="test", max_retries=0,
-                                         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+                                         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
     r = asyncio.run(be.run_batch([Task("a", "What is 17+25?")], "low", "claude-opus-5-5"))
     assert r.answers == {"a": "42"} and r.confidence == {"a": 0.8}
     b = seen["body"]
     assert b["fallbacks"] == "default" and "server-side-fallback" in seen["beta"]
+    assert seen["version"] == "2026-10-21"  # SDK 2.x API version
+    assert seen["auth"] == "Bearer test"  # SDK 2.x sends the key as a bearer token
     assert b["output_config"]["effort"] == "low"
     assert b["output_config"]["format"]["type"] == "json_schema"
     assert "cache_control" in b["system"][-1] and "DOC" in b["system"][-1]["text"]
@@ -350,7 +354,7 @@ def test_batch_api_backend_coalesces_and_resolves():
                  "results_url": "https://api.anthropic.com/v1/messages/batches/b1/results"}
         if req.method == "POST":
             created["reqs"] = json.loads(req.content)["requests"]
-            return httpx.Response(200, json=batch)
+            return httpx2.Response(200, json=batch)
         if url.endswith("/results"):
             lines = []
             for r in created["reqs"]:
@@ -358,12 +362,12 @@ def test_batch_api_backend_coalesces_and_resolves():
                 lines.append(json.dumps({"custom_id": r["custom_id"], "result": {
                     "type": "succeeded",
                     "message": _msg([{"id": i, "answer": "ok", "confidence": 1} for i in ids])}}))
-            return httpx.Response(200, content="\n".join(lines).encode())
-        return httpx.Response(200, json=batch)
+            return httpx2.Response(200, content="\n".join(lines).encode())
+        return httpx2.Response(200, json=batch)
 
     be = AnthropicBatchBackend(window_s=0.01, poll_s=0.01)
     be.client = anthropic.AsyncAnthropic(api_key="test", max_retries=0,
-                                         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+                                         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
 
     async def go():
         return await asyncio.gather(be.run_batch([Task("a", "p1")], "low", "claude-opus-5-5"),

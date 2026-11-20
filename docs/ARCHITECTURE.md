@@ -30,6 +30,16 @@ evidence. The research-specific choices:
 - **Batch size 1 and no hedging**, because each call is already a multi-search job.
 - **Unverified findings are passed to synthesis labelled as such**, and the prompt requires
   a Limitations section. They are not silently dropped.
+- **Claim check after synthesis.** The citation gate only counts sources; the claim check
+  tests each cited sentence against the excerpts of the sources it cites. Claims are batched
+  ten per call through the same engine. Its verdicts are themselves model judgements, so the
+  report shows them as marks and a support rate rather than silently deleting sentences.
+- **Injection defences in layers:** prompt rule, delimiters, pattern detection with
+  exclusion, output sanitising and least-privilege tools. None of these is complete on its
+  own.
+- **Money is the budget unit users see.** The engine budgets in input-token equivalents,
+  converted from dollars at the model's list price. Search fees are added as token
+  equivalents, so one cap covers both.
 
 ## Pipeline
 

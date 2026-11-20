@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import random
 import time
@@ -96,6 +95,7 @@ class CallUsage:
     cache_write_tokens: int = 0
     output_tokens: int = 0
     price_mult: float = 1.0  # 0.5 on the Batches API
+    extra_billed: float = 0.0  # non-token fees (e.g. web searches) in input-token equivalents
 
     @property
     def billed_equiv(self) -> float:
@@ -106,7 +106,7 @@ class CallUsage:
         return self.price_mult * (
             self.input_tokens + 0.1 * self.cache_read_tokens
             + 1.25 * self.cache_write_tokens + 5 * self.output_tokens
-        )
+        ) + self.extra_billed
 
     @property
     def total(self) -> int:
@@ -195,18 +195,14 @@ class AnthropicBackend:
         self.shared_context = shared_context
         self.max_tokens_per_task = max_tokens_per_task
         self.use_fallbacks = use_fallbacks
-        self._sdk_fallbacks = "fallbacks" in inspect.signature(self.client.beta.messages.create).parameters
 
     async def run_batch(self, tasks: list[Task], effort: str, model: str) -> BatchResponse:
         a = self._a
         kw = build_params(tasks, effort, model, self.shared_context, self.max_tokens_per_task)
         try:
             if self.use_fallbacks:
-                if self._sdk_fallbacks:
-                    kw["fallbacks"] = "default"
-                else:  # older SDKs: send the field untyped
-                    kw["extra_body"] = {"fallbacks": "default"}
-                msg = await self.client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], **kw)
+                msg = await self.client.beta.messages.create(
+                    betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kw)
             else:
                 msg = await self.client.messages.create(**kw)
         except a.RateLimitError as e:

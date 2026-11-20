@@ -7,7 +7,7 @@ cost-aware, fault-tolerant engine built from what 2025–2026 multi-agent resear
 
 [![CI](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
-![Tests](https://img.shields.io/badge/tests-34%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-47%20passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 > **Thesis**, from the [research report](docs/research/Multi%20agent%20swarms%20state%20of%20the%20art.md):
@@ -26,15 +26,30 @@ python -m swarm research "How do heat pumps compare to gas boilers in cold clima
 ```
 
 ```
-question ─► plan (1 call): independent sub-questions, count scaled to the question
+question ─► cost estimate; refuse if it exceeds the dollar cap (default $2)
+         ─► plan (1 call): independent sub-questions, count scaled to the question
          ─► swarm engine: one worker per sub-question, in parallel
               each worker: Claude + server-side web search/fetch → answer with citations
-              gate (code): ≥ 2 sources from ≥ 2 distinct domains, enough substance
+              gate (code): ≥ 2 sources from ≥ 2 domains, enough substance, no injection markers
               weak finding → re-researched at higher effort (low → medium → high)
-         ─► synthesis (1 call): report from verified findings only, inline [n] citations
-         ─► integrity check (code): drop references to non-existent sources, count
-            uncited paragraphs, append the numbered source list
+         ─► synthesis (1 call): report from clean findings only, inline [n] citations
+         ─► reference check (code): drop references to non-existent sources
+         ─► claim check: every cited sentence vs. the quoted text of the sources it cites,
+            batched through the engine; partly supported / unsupported sentences are marked
+         ─► sanitise (code): strip images, HTML and links to anything but cited sources
 ```
+
+**Trust and safety built in:**
+- **Cost:** a dollar estimate before the run, the actual cost after it, and a hard cap
+  (`--max-usd`, default $2). Web-search fees ($10 per 1,000 searches) count against the cap.
+  Prices are list prices from Anthropic's pricing page, checked 2026-11-21.
+- **Claim-level verification:** each cited sentence is checked against the actual source
+  excerpts returned by web search. The report says how many claims are supported, and marks
+  the rest inline.
+- **Prompt-injection defences:** web text is treated as data, not instructions, and passed
+  inside delimiters. Findings with injection markers are re-researched, then excluded and
+  named in the report. Output is sanitised so a rendered report can't call out to a third
+  party. Workers can only search and fetch.
 
 **Why this use case.** Seeking information and practical guidance are among the three most
 common things people use chat assistants for: together with writing, nearly 80% of about
@@ -55,9 +70,15 @@ with a fresh context ([Anthropic](https://www.anthropic.com/engineering/multi-ag
   mostly from voting.
 - **No hedging on research calls.** Duplicating a multi-search call doubles a large cost.
 
-Every run prints its stats: sub-questions, verified %, agents, worker calls, web searches,
-sources, tokens, wall time, escalations, invalid references removed and uncited paragraphs.
-`--mock` runs the whole pipeline offline with no API calls.
+Every run prints its stats:
+- cost against the estimate and the cap
+- verified %, sub-questions, agents and worker calls
+- web searches and sources
+- claim support %, invalid references removed and uncited paragraphs
+- excluded findings and unsafe markup removed
+
+`--estimate` prints the expected cost and exits. `--mock` runs the whole pipeline offline,
+with no API calls.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -65,7 +86,30 @@ sources, tokens, wall time, escalations, invalid references removed and uncited 
 | `--efforts` | `low,medium,high` | worker escalation ladder on `--model` (`claude-opus-5-5`) |
 | `--max-searches` | 5 | web searches per worker call |
 | `--min-citations` / `--min-domains` | 2 / 2 | the citation gate |
-| `--budget` | none | ceiling on worker tokens |
+| `--max-usd` | 2.00 | hard dollar cap for the run (0 = none) |
+| `--estimate` | off | print the cost estimate and exit |
+| `--no-claim-check` | off | skip the claim check (cheaper, less trustworthy) |
+
+### Evaluate it
+
+```bash
+python -m swarm eval --estimate
+```
+
+```bash
+python -m swarm eval --out eval.json
+```
+
+`eval` runs the questions in [`evals/questions.jsonl`](evals/questions.jsonl) (14 stable,
+known-answer questions; bring your own in the same format) through two systems:
+- **swarm**: the full pipeline;
+- **single**: one Claude call with web search, the same model and the same total search allowance.
+
+Each answer is scored deterministically: it's correct only if an accepted answer appears in
+the report's direct-answer section. The output is a table of accuracy, dollars per question,
+dollars per correct answer, median time and claim support, plus per-question results.
+`--max-usd-total` (default $10) stops the run when it is reached. `--mock` checks the
+plumbing offline.
 
 ## Engine results at a glance
 
@@ -206,7 +250,7 @@ Following *AI Agents That Matter* (Kapoor et al. 2024) and HAL (ICLR 2026):
   (best fixed configuration);
 - an adversarial simulator with three endpoint profiles, **clearly labelled as simulated**.
 
-CI runs ruff, mypy, 34 tests on Python 3.10–3.13, and a benchmark smoke test. The tests cover
+CI runs ruff, mypy, 47 tests on Python 3.10–3.13, and a benchmark smoke test. The tests cover
 the policy maths, every reliability path, and both real backends against a mocked HTTP
 transport, with no network and no spend.
 
@@ -221,20 +265,24 @@ swarm/
   limiter.py       AIMD concurrency (with ramp-limit hold)
   planner.py       config, escalation ladder, agent-count knee
   task.py          tasks, checkers
-  research.py      deep research: planner, web-search workers, citation gate, synthesis
-  __main__.py      CLI: research / bench / run / gen
+  research.py      deep research: planner, web-search workers, citation gate, synthesis, claim check
+  evaluate.py      known-answer evaluation vs a compute-matched single agent
+  pricing.py       list prices, dollar cost of a run, pre-run estimate
+  safety.py        prompt-injection detection, report sanitising
+  __main__.py      CLI: research / eval / bench / run / gen
 docs/
   ARCHITECTURE.md  design decisions with evidence
   research/        literature review + source notes
   assets/          benchmark JSON and charts
 scripts/plot_benchmark.py
-tests/test_swarm.py, tests/test_research.py
+tests/test_swarm.py, tests/test_research.py, tests/test_product.py
+evals/questions.jsonl
 ```
 
 ## Limitations and roadmap
 
-- [ ] Deep-research evaluation on a question set (e.g. BrowseComp-style) against a single
-      agent with the same token budget.
+- [ ] Run `swarm eval` against live web search, publish the numbers, then scale up to a
+      BrowseComp-style question set.
 - [ ] Real-endpoint benchmark on Claude: dollars per verified success, the effort sweep, and
       whether batching reduces thinking tokens on adaptive-thinking models (open questions in
       the report).

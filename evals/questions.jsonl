@@ -1,0 +1,14 @@
+{"id": "saturn-moons", "question": "Which planet in the Solar System had the most confirmed moons as of 2025?", "answers": ["Saturn"]}
+{"id": "first-woman-nobel", "question": "Who was the first woman to win a Nobel Prize, and in which field did she first win it?", "answers": ["Curie"]}
+{"id": "tallest-base-to-peak", "question": "Which mountain is the tallest on Earth when measured from its base to its peak?", "answers": ["Mauna Kea"]}
+{"id": "hubble-launch", "question": "In what year was the Hubble Space Telescope launched?", "answers": ["1990"]}
+{"id": "python-creator", "question": "Who created the Python programming language?", "answers": ["Guido van Rossum", "van Rossum"]}
+{"id": "first-crispr-therapy", "question": "What was the first CRISPR-based gene-editing therapy approved by the US FDA, and which disease does it treat?", "answers": ["Casgevy", "sickle cell"]}
+{"id": "speed-of-light", "question": "What is the exact defined speed of light in vacuum, in metres per second?", "answers": ["299792458"]}
+{"id": "first-moon-landing", "question": "Which mission first landed humans on the Moon?", "answers": ["Apollo 11"]}
+{"id": "linux-second-language", "question": "Besides C, which programming language was accepted into the mainline Linux kernel for writing drivers, starting with version 6.1?", "answers": ["Rust"]}
+{"id": "largest-desert", "question": "What is the largest desert in the world by area if polar deserts are counted?", "answers": ["Antarctic", "Antarctica"]}
+{"id": "eu-founding-treaty", "question": "Which treaty founded the European Union?", "answers": ["Maastricht"]}
+{"id": "carbon-14-half-life", "question": "What is the approximate half-life of carbon-14, in years?", "answers": ["5730", "5700"]}
+{"id": "h100-maker", "question": "Which company makes the H100 data-center GPU widely used to train AI models?", "answers": ["NVIDIA"]}
+{"id": "jwst-orbit", "question": "Around which Lagrange point does the James Webb Space Telescope orbit?", "answers": ["L2", "second Lagrange point"]}

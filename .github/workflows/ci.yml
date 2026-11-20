@@ -37,9 +37,12 @@ jobs:
       - run: python -m swarm bench --n 200 --seeds 1 --profile v1-tuned --out bench.json
       - name: Deep research end to end (offline mock)
         run: python -m swarm research "Smoke test question" --mock --out report.md
+      - name: Evaluation harness (offline mock)
+        run: python -m swarm eval --mock --limit 4 --out eval.json
       - uses: actions/upload-artifact@v4
         with:
           name: bench
           path: |
             bench.json
             report.md
+            eval.json

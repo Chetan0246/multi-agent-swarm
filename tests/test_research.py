@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-import httpx
+import httpx2
 
 from swarm.research import (
     AnthropicResearchLLM,
@@ -82,7 +82,7 @@ def _client(handler):
     llm = AnthropicResearchLLM()
     llm.client = anthropic.AsyncAnthropic(
         api_key="test", max_retries=0,
-        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)))
     return llm
 
 
@@ -96,7 +96,7 @@ def test_investigate_resumes_pause_turn_and_collects_citations():
 
     def handler(req):
         bodies.append(json.loads(req.content))
-        return httpx.Response(200, json=_msg(paused, "pause_turn", 1) if len(bodies) == 1
+        return httpx2.Response(200, json=_msg(paused, "pause_turn", 1) if len(bodies) == 1
                               else _msg(final, "end_turn", 2))
 
     text, cites, usage, searches = asyncio.run(
@@ -118,7 +118,7 @@ def test_plan_uses_structured_output():
     def handler(req):
         seen.update(json.loads(req.content))
         out = {"subquestions": [{"question": "a?", "difficulty": 1}, {"question": "b?", "difficulty": 3}]}
-        return httpx.Response(200, json=_msg([{"type": "text", "text": json.dumps(out)}]))
+        return httpx2.Response(200, json=_msg([{"type": "text", "text": json.dumps(out)}]))
 
     subs, _ = asyncio.run(_client(handler).plan("Q", 4, "claude-opus-5-5", "medium"))
     assert [s["question"] for s in subs] == ["a?", "b?"]

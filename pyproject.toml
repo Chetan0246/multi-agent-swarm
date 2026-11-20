@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multi-agent-swarm"
-version = "2.2.0"
+version = "2.3.0"
 description = "Deep research with a cost-aware, fault-tolerant multi-agent swarm on Claude: parallel cited web research, verified findings, one report"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-dependencies = ["anthropic>=0.105,<1"]  # tested on 0.105.x; 1.x moved to httpx2
+dependencies = ["anthropic>=2.12,<3"]
 keywords = ["llm", "multi-agent", "agents", "claude", "deep-research", "web-search", "citations", "batching", "thompson-sampling", "reliability"]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -23,7 +23,7 @@ Documentation = "https://github.com/Chetan0246/multi-agent-swarm/blob/main/docs/
 Changelog = "https://github.com/Chetan0246/multi-agent-swarm/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "matplotlib>=3.8"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "matplotlib>=3.8", "httpx2>=2.0"]
 
 [project.scripts]
 swarm = "swarm.__main__:main"
