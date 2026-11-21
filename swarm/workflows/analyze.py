@@ -118,30 +118,49 @@ def profile(path: Path, max_rows: int = 200_000) -> dict[str, Any]:
             "delimiter": getattr(dialect, "delimiter", ",")}
 
 
-_NUM = re.compile(r"(?<![\w.])-?\d[\d,]*\.?\d*%?")
+_NUM = re.compile(r"(?<![\w.])[-−]?\d[\d,]*\.?\d*%?")
 
 
 def _numbers(text: str) -> set[str]:
+    """Numbers as written, without sign: prose says "fell 31.19%" for a computed -31.19."""
     out = set()
     for m in _NUM.findall(text):
-        n = m.rstrip("%").replace(",", "").rstrip(".")
-        if n and len(n.lstrip("-").replace(".", "")) >= 2:  # single digits are list markers etc.
+        n = m.rstrip("%").replace(",", "").rstrip(".").lstrip("-−")
+        if n and len(n.replace(".", "")) >= 2:  # single digits are list markers etc.
             out.add(n)
     return out
 
 
-def _variants(n: str) -> set[str]:
-    """A number as it may be rounded in prose: 1234.5678 -> {1234.5678, 1234.57, 1234.6, 1235, ...}."""
-    try:
-        x = float(n)
-    except ValueError:
-        return {n}
-    out = {n}
-    for d in range(0, 5):
-        out.add(f"{round(x, d):.{d}f}" if d else str(round(x)))
-    if abs(x) <= 1:  # shares shown as percentages
-        out |= {f"{round(100 * x, d):.{d}f}" if d else str(round(100 * x)) for d in range(0, 3)}
+def _matches(printed: str, value: float) -> bool:
+    """True when `value`, rounded to the precision `printed` shows, is `printed` (sign ignored)."""
+    decimals = len(printed.split(".", 1)[1]) if "." in printed else 0
+    return f"{round(abs(value), decimals):.{decimals}f}" == f"{float(printed):.{decimals}f}"
+
+
+def unsupported_numbers(report: str, computed: list[float]) -> list[str]:
+    """Numbers in the report that no computed figure supports.
+
+    A number is supported when it is a computed figure, a percentage of one (shares stored as
+    0.305), or one simple step from two of them: a difference, a sum, a ratio, or a percentage
+    or percent change. Each must match at exactly the precision the report prints, so a
+    derived figure passes only if the arithmetic is right."""
+    vals = sorted({abs(v) for v in computed if v == v})[:400]  # NaN-safe; bound the pair search
+    out = []
+    for n in sorted(_numbers(report)):
+        direct = any(_matches(n, v) or _matches(n, 100 * v) for v in vals)
+        if direct:
+            continue
+        derived = any(_matches(n, a - b) or _matches(n, a + b)
+                      or (b != 0 and (_matches(n, a / b) or _matches(n, 100 * a / b) or _matches(n, 100 * (a / b - 1))))
+                      for a in vals for b in vals if a != b)
+        if not derived:
+            out.append(n)
     return out
+
+
+def _computed(obj: object) -> list[float]:
+    """Every number in the analyses' JSON results (and the data profile)."""
+    return [float(m) for m in re.findall(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", json.dumps(obj))]
 
 
 async def analyze(data: Path, question: str, chat: Chat, out: Path, *, max_questions: int = 5,
@@ -212,10 +231,10 @@ async def analyze(data: Path, question: str, chat: Chat, out: Path, *, max_quest
     md = await chat.complete(REPORT_SYSTEM, f"Question: {question}\nData: {prof['file']}, {prof['rows']} rows\n\n"
                                             f"Results:\n{dumps(findings)}\n\nFailed analyses: {failed or 'none'}",
                              effort="medium", max_tokens=8000, role="analyze.report")
-    known: set[str] = set()
-    for n in _numbers(json.dumps(findings) + json.dumps(prof)):
-        known |= _variants(n)
-    unverified = sorted(n for n in _numbers(md) if not (_variants(n) & known))
+    unverified = unsupported_numbers(md, _computed([findings, prof]))
+    # Keep what the code computed next to the report, so every figure can be audited later.
+    (work / "results.json").write_text(json.dumps({"question": question, "profile": prof, "findings": findings,
+                                                   "failed": failed, "unverified_numbers": unverified}, indent=1))
     if unverified:
         md = md.rstrip() + (f"\n\n> **Number check:** {len(unverified)} number(s) in this report do not appear in "
                             f"the computed results: {', '.join(unverified[:12])}.\n")

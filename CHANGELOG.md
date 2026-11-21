@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+Improvements from the first live runs of write, analyze, review and doc (DeepSeek via River,
+about $0.01 in total). Every figure the analysis reported was correct, checked against the data.
+
+- **analyze: the number check no longer raises false alarms.** It flagged 6 correct figures:
+  differences, regional shares, and a percentage written without its minus sign. It now
+  accepts figures one step from computed ones (difference, sum, share or percent change) when
+  the arithmetic is right at the precision shown, ignores signs, and still flags invented
+  numbers. The computed results are saved as `analysis/results.json`.
+- **review: a second, skeptical check.** About 7 of 9 live findings were valid; one wrongly
+  assumed how an imported module behaves. Each finding is now checked against the project
+  files the reviewed file imports (two levels deep). Refuted findings are dropped and
+  undecidable ones marked "unconfirmed". `--no-verify` skips this pass.
+- **doc summarize: respects the length target.** A 200-word request returned 342 words. A
+  condensing pass now runs when the merged summary is more than 30% over the target.
+
 ## 3.3.1 — fixes from the 3.3.0 audit
 Fixes from an audit of the 3.1–3.3 code, each with a regression test (`tests/test_audit2.py`).
 

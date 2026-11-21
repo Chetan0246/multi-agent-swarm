@@ -222,3 +222,62 @@ def test_doc_translate_uses_one_glossary_and_summarize_merges():
     assert all("Schwarm-Engine" in u for u in seen)  # the same glossary went to every chunk
     s = asyncio.run(summarize(text, MockChat(respond), words=100, max_chars=1500))
     assert s.text.strip() == "One merged summary." and s.chunks >= 4
+
+
+# ------------------------------------------------------------------ found in the first live run
+
+
+def test_number_check_accepts_derived_figures_and_catches_invented_ones():
+    from swarm.workflows.analyze import unsupported_numbers
+
+    computed = [622.0, 516.0, 6063900.0, 4519500.0, 19873400.0, -31.19, 0.3051]
+    report = ("Units fell from 622 to 516 (−106). East ($6,063,900) leads West by $1,544,400, "
+              "a 30.5% share of $19,873,400. Boiler revenue fell 31.19%.")
+    assert unsupported_numbers(report, computed) == []  # differences, shares, sign: all supported
+    invented = report + " The North grew 23.7%, reaching $7,777,777."
+    assert unsupported_numbers(invented, computed) == ["23.7", "7777777"]
+    assert unsupported_numbers("A share of 30.6%.", computed) == ["30.6"]  # wrong rounding is not accepted
+
+
+def test_review_verifier_drops_refuted_findings_with_related_code(tmp_path):
+    from swarm.workflows.review import related_files, review
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "config.py").write_text("import os\n\ndef path():\n    return os.environ['P']\n")
+    (tmp_path / "app" / "db.py").write_text("from app.config import path\n\ndef connect():\n    return path()\n")
+    (tmp_path / "test_x.py").write_text("from app.db import connect\n\ndef test():\n    assert connect()\n")
+    texts = {p: (tmp_path / p).read_text() for p in ("app/config.py", "app/db.py", "test_x.py")}
+    assert set(related_files("test_x.py", texts)) == {"app/db.py", "app/config.py"}  # two levels deep
+    seen_ctx = []
+
+    def respond(role, system, user, schema):
+        if role == "review.file":
+            if "test_x.py" not in user.split("File: ")[1][:20]:
+                return json.dumps({"findings": []})
+            return json.dumps({"findings": [
+                {"line": 4, "severity": "medium", "category": "bug", "title": "env read too early",
+                 "explanation": "config caches the path at import", "suggestion": "-", "quote": "assert connect()"},
+                {"line": 1, "severity": "low", "category": "style", "title": "maybe fine",
+                 "explanation": "?", "suggestion": "-", "quote": "from app.db import connect"}]})
+        seen_ctx.append(user)
+        refuted = "env read too early" in user and "os.environ['P']" in user  # config.py shows it reads on each call
+        return json.dumps({"verdict": "refuted" if refuted else "unsure", "reason": "r"})
+
+    res = asyncio.run(review(tmp_path, MockChat(respond)))
+    assert res.refuted == 1 and [f.title for f in res.findings] == ["maybe fine"]
+    assert res.findings[0].category.endswith("(unconfirmed)") and "refuted them" in res.markdown
+    assert all("--- app/config.py ---" in u for u in seen_ctx)  # the verifier saw the related module
+
+
+def test_summary_is_condensed_when_far_over_its_target():
+    from swarm.workflows.doc import summarize
+
+    def respond(role, system, user, schema):
+        if role == "doc.merge":
+            return "word " * 340  # 70% over a 200-word target
+        if role == "doc.condense":
+            return "short " * 190
+        return "part summary"
+
+    res = asyncio.run(summarize("## A\n\n" + "text " * 500, MockChat(respond), words=200))
+    assert len(res.text.split()) == 190

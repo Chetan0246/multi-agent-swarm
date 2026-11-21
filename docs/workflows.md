@@ -87,7 +87,10 @@ to `--questions` independent analyses. Analysts write Python for each one, and t
 
 The report is written only from the results the code printed. Each number in it is then
 checked against those results; any number that isn't there is listed in a "Number check" note.
-Charts and every analysis script are saved in `report/analysis/`. pandas and matplotlib are
+Charts, every analysis script, and the results the code printed (`results.json`) are saved in
+`report/analysis/`. The number check accepts figures one simple step from computed ones (a
+difference, a sum, a share or a percent change), but only when the arithmetic is right at the
+precision shown. pandas and matplotlib are
 used when your Python has them.
 
 ## Review code
@@ -100,7 +103,12 @@ swarm review src/ --focus "security" --out security.md
 Every file (git-tracked, or found by a walk that skips `node_modules`, `.venv`, build output
 and the like) goes to its own reviewer. Long files are split into overlapping windows. Each
 finding must quote the code it's about; a finding whose quote isn't in the file is dropped,
-and line numbers are corrected to where the quote actually is. You get Markdown ranked by
+and line numbers are corrected to where the quote actually is.
+
+A second, skeptical pass then checks each finding against the file and the project files it
+imports (two levels deep). A first reviewer who saw one file may have guessed wrong about a
+module it uses. Findings that the related code disproves are dropped, and ones that depend on
+code nobody can see are marked "unconfirmed". `--no-verify` skips this pass. You get Markdown ranked by
 severity, plus a `.json` file with the findings.
 
 ## Translate, summarize or rewrite long documents

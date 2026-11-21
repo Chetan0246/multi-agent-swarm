@@ -463,11 +463,13 @@ def cmd_review(a: argparse.Namespace) -> None:
     from .workflows.review import review, to_json
 
     res: Any = _run_workflow(a, lambda chat: review(Path(a.path), chat, focus=a.focus or "",
-                                                    max_files=a.max_files, agents=a.agents, log=_say))
+                                                    max_files=a.max_files, agents=a.agents,
+                                                    verify_findings=not a.no_verify, log=_say))
     _write_out(a.out, res.markdown)
     if a.out:
         Path(a.out).with_suffix(".json").write_text(json.dumps(to_json(res), indent=1))
-    _say(f"{res.files_reviewed} files, {len(res.findings)} findings, {res.dropped_ungrounded} dropped as ungrounded; "
+    _say(f"{res.files_reviewed} files, {len(res.findings)} findings, {res.dropped_ungrounded} dropped as ungrounded, "
+         f"{res.refuted} refuted on a second check; "
          f"${res.usd:.4f} over {res.calls} calls")
 
 
@@ -664,6 +666,8 @@ def main() -> None:
     rv.add_argument("path")
     rv.add_argument("--focus", default=None, help='e.g. "security" or "error handling"')
     rv.add_argument("--max-files", type=int, default=80)
+    rv.add_argument("--no-verify", action="store_true",
+                    help="skip the second check of each finding against the code it imports (faster, less precise)")
     rv.add_argument("--out", default=None, help="Markdown report (a .json with the findings is written too)")
     _provider_args(rv, 2.0)
     rv.set_defaults(fn=cmd_review)

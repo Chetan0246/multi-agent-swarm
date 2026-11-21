@@ -52,6 +52,11 @@ MERGE_SYSTEM = (
     "kept, nothing added. Markdown."
 )
 
+CONDENSE_SYSTEM = (
+    "Shorten this summary to about {words} words. Keep every key decision, number and name; drop "
+    "repetition, examples and detail first. Same language and Markdown style. Output only the summary."
+)
+
 
 @dataclass
 class DocResult:
@@ -162,4 +167,10 @@ async def summarize(text: str, chat: Chat, *, words: int = 400, max_chars: int =
     final = await chat.complete(MERGE_SYSTEM.format(words=words),
                                 "\n\n".join(f"Part {i + 1}:\n{s}" for i, s in enumerate(summaries)),
                                 effort="medium", max_tokens=8000, role="doc.merge")
+    # Models overshoot length targets; one condensing pass when the summary is well over it.
+    if len(final.split()) > 1.3 * words:
+        shorter = await chat.complete(CONDENSE_SYSTEM.format(words=words), final, effort="low", max_tokens=4000,
+                                      role="doc.condense")
+        if shorter.strip() and len(shorter.split()) < len(final.split()):
+            final = shorter
     return DocResult(final.strip() + "\n", len(parts), failed, round(chat.usd, 4), chat.calls)

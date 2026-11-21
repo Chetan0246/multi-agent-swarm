@@ -29,7 +29,7 @@ sentence is checked again against those quotes, and anything unsupported is mark
 
 [![CI](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
-![Tests](https://img.shields.io/badge/tests-132%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-135%20passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-informational)](https://chetan0246.github.io/multi-agent-swarm/)
 
@@ -154,7 +154,7 @@ measured in real time, so small runs (`--n 120`) vary much more.
 
 ```bash
 pip install -e '.[dev]'
-make lint test        # ruff, mypy, 132 tests (all offline: no keys, no cost)
+make lint test        # ruff, mypy, 135 tests (all offline: no keys, no cost)
 make bench chart      # engine benchmark + charts
 ```
 
