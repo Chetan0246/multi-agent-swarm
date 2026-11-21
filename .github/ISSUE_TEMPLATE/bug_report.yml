@@ -14,4 +14,4 @@ body:
     attributes: { label: Error output, description: "Remove any API keys before pasting.", render: text }
   - type: input
     id: version
-    attributes: { label: Version, placeholder: "3.3.1" }
+    attributes: { label: Version, placeholder: "3.3.2" }

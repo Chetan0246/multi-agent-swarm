@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.3.2 — improvements from the first live runs of every workflow
 Improvements from the first live runs of write, analyze, review and doc (DeepSeek via River,
 about $0.01 in total). Every figure the analysis reported was correct, checked against the data.
 

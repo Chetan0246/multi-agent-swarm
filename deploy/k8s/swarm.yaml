@@ -68,7 +68,7 @@ spec:
           emptyDir: {}
       containers:
         - name: api
-          image: ghcr.io/chetan0246/multi-agent-swarm:3.3.1
+          image: ghcr.io/chetan0246/multi-agent-swarm:3.3.2
           args: ["swarm", "serve", "--host", "0.0.0.0", "--port", "8000", "--no-worker"]
           ports: [{name: http, containerPort: 8000}]
           envFrom:
@@ -93,7 +93,7 @@ spec:
             - {name: tmp, mountPath: /tmp}
             - {name: home, mountPath: /home/app}
         - name: worker
-          image: ghcr.io/chetan0246/multi-agent-swarm:3.3.1
+          image: ghcr.io/chetan0246/multi-agent-swarm:3.3.2
           args: ["swarm", "worker", "--concurrency", "4"]
           envFrom:
             - configMapRef: {name: swarm-config}
