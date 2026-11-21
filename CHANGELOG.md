@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.3.1 — fixes from the 3.3.0 audit
 Fixes from an audit of the 3.1–3.3 code, each with a regression test (`tests/test_audit2.py`).
 
 - **A job could run twice and be paid for twice.** If a worker stalled long enough to be
