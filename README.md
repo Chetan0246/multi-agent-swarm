@@ -29,7 +29,7 @@ sentence is checked again against those quotes, and anything unsupported is mark
 
 [![CI](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
-![Tests](https://img.shields.io/badge/tests-108%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-118%20passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-informational)](https://chetan0246.github.io/multi-agent-swarm/)
 
@@ -54,7 +54,8 @@ Try it with no keys and no cost first: `swarm research "any question" --mock --o
 | **Follow-ups** | `--follow-up report.json` researches only what's new and rewrites the report |
 | **Source filters** | domain allow/block lists, recency, news or research papers, language |
 | **Exports** | Markdown, JSON, and self-contained HTML with hover-over source quotes |
-| **Web UI and REST API** | `swarm serve`: live progress, history, downloads, follow-ups; Docker image |
+| **Web UI and REST API** | `swarm serve`: live progress, history, downloads, follow-ups; research, write and doc jobs over HTTP |
+| **Production-ready server** | a durable job queue with crash recovery, scalable `swarm worker` processes, per-user API keys with daily budgets and rate limits, Prometheus metrics, JSON logs; Docker Compose with HTTPS, Kubernetes and systemd setups ([docs/deployment.md](docs/deployment.md)) |
 | **Local cache** | repeated searches and pages cost nothing and use no quota |
 | **Batch tasks** | `swarm run tasks.jsonl`: thousands of small text, code or web-lookup tasks, each checked (exact answer, regex, tests run in a sandbox, or grounded sources), retried at higher effort and capped in dollars ([docs/tasks.md](docs/tasks.md)) |
 | **Any model provider** | Claude, or any OpenAI-compatible API such as DeepSeek, Together, OpenRouter or vLLM (`--base-url`, `--model`, `--price`) |
@@ -108,6 +109,18 @@ The full flag reference is in [docs/cli.md](docs/cli.md); config files and envir
 variables are in [docs/configuration.md](docs/configuration.md); the web UI and REST API are
 in [docs/web-api.md](docs/web-api.md).
 
+## Deploy
+
+```bash
+cp deploy/.env.example deploy/.env    # your domain and keys
+docker compose -f deploy/compose.yaml up -d --build
+docker compose -f deploy/compose.yaml exec api swarm keys create --name alice --daily-usd 5
+```
+
+That gives you HTTPS through Caddy, an API process, workers you can scale, and jobs that
+survive restarts. Kubernetes and systemd setups are in `deploy/`; the full guide is
+[docs/deployment.md](docs/deployment.md).
+
 ## Costs and privacy
 
 - **TinyFish search and fetch:** free within the daily allowance.
@@ -141,7 +154,7 @@ measured in real time, so small runs (`--n 120`) vary much more.
 
 ```bash
 pip install -e '.[dev]'
-make lint test        # ruff, mypy, 108 tests (all offline: no keys, no cost)
+make lint test        # ruff, mypy, 118 tests (all offline: no keys, no cost)
 make bench chart      # engine benchmark + charts
 ```
 

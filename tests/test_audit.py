@@ -242,8 +242,9 @@ def test_server_follow_up_inherits_options_and_validates_kind(tmp_path, monkeypa
         c.get(f"/api/jobs/{job_id}/events")  # wait for the end of the stream
         f = c.post(f"/api/jobs/{job_id}/follow-up", json={"question": "And costs?"})
         assert f.status_code == 202, f.text
-        child = app.state.store.jobs[f.json()["id"]]
-        assert child.options["preset"] == "quick" and child.options["include_domains"] == ["nrel.gov"]
+        child = app.state.db.get(f.json()["id"])
+        assert child["params"]["preset"] == "quick" and child["params"]["include_domains"] == ["nrel.gov"]
+        assert child["parent"] == job_id
 
 
 def test_eval_counts_spend_of_a_failed_run():

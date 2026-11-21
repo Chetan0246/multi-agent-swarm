@@ -144,7 +144,7 @@ async function watch(id) {
     for (;;) {
       const j = await (await api(`/api/jobs/${id}`)).json();
       j.events.slice(seen).forEach((e) => log(describe(e))); seen = j.events.length;
-      if (j.status === "done" || j.status === "error") return finish(j);
+      if (["done", "error", "cancelled"].includes(j.status)) return finish(j);
       await new Promise((r) => setTimeout(r, 1500));
     }
   }
@@ -157,6 +157,7 @@ async function watch(id) {
 async function finish(j) {
   $("go").disabled = false; $("fgo").disabled = false; history();
   if (j.status === "error") { $("status").textContent = "Failed: " + j.error; $("status").className = "err"; return; }
+  if (j.status === "cancelled") { $("status").textContent = "Cancelled"; $("status").className = "err"; return; }
   if (j.status !== "done") return;
   $("status").textContent = "Done"; $("status").className = "ok";
   const s = j.stats || {};

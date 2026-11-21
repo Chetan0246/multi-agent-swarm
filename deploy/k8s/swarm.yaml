@@ -1,0 +1,137 @@
+# Kubernetes: one pod with the API and a worker sharing the job database on a volume.
+#
+#   kubectl create namespace swarm
+#   kubectl -n swarm create secret generic swarm-secrets \
+#       --from-literal=ANTHROPIC_API_KEY=... --from-literal=TINYFISH_API_KEY=... \
+#       --from-literal=SWARM_METRICS_TOKEN=$(openssl rand -hex 24)
+#   kubectl -n swarm apply -f deploy/k8s/swarm.yaml
+#   kubectl -n swarm exec deploy/swarm -c api -- swarm keys create --name me --daily-usd 5
+#
+# The job database is SQLite, so the pod is a single replica with a ReadWriteOnce volume and a
+# Recreate strategy (one writer host). Scale jobs with the worker's --concurrency, or add more
+# worker containers to this pod. Running API and workers on several nodes needs a shared
+# database server instead of SQLite.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: swarm-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: swarm-config
+data:
+  SWARM_ALLOWED_HOSTS: "swarm.example.com,swarm"
+  SWARM_TRUSTED_PROXIES: "*"
+  SWARM_MAX_USD_PER_JOB: "2"
+  SWARM_DEFAULT_RPM: "60"
+  SWARM_JOB_TIMEOUT_S: "1800"
+  SWARM_RETENTION_DAYS: "30"
+  SWARM_ALLOW_MOCK: "false"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: swarm
+  labels: {app: swarm}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: swarm}
+  template:
+    metadata:
+      labels: {app: swarm}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      terminationGracePeriodSeconds: 45   # workers re-queue running jobs on SIGTERM
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: swarm-data}
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+      containers:
+        - name: api
+          image: ghcr.io/chetan0246/multi-agent-swarm:3.3.0
+          args: ["swarm", "serve", "--host", "0.0.0.0", "--port", "8000", "--no-worker"]
+          ports: [{name: http, containerPort: 8000}]
+          envFrom:
+            - configMapRef: {name: swarm-config}
+            - secretRef: {name: swarm-secrets}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 512Mi}
+          securityContext: &hardened
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts: &mounts
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+            - {name: home, mountPath: /home/app}
+        - name: worker
+          image: ghcr.io/chetan0246/multi-agent-swarm:3.3.0
+          args: ["swarm", "worker", "--concurrency", "4"]
+          envFrom:
+            - configMapRef: {name: swarm-config}
+            - secretRef: {name: swarm-secrets}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {memory: 2Gi}
+          securityContext: *hardened
+          volumeMounts: *mounts
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: swarm
+spec:
+  selector: {app: swarm}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: swarm
+  annotations:
+    # Server-Sent Events: don't buffer, and allow long-lived connections.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [swarm.example.com]
+      secretName: swarm-tls
+  rules:
+    - host: swarm.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: swarm, port: {name: http}}

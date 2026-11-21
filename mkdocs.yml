@@ -21,6 +21,7 @@ nav:
   - "Batch tasks: text, code, web": tasks.md
   - "Build, write, analyze, review": workflows.md
   - Web UI and API: web-api.md
+  - Deploying to production: deployment.md
   - Configuration: configuration.md
   - How it works: ARCHITECTURE.md
   - Privacy and costs: privacy.md

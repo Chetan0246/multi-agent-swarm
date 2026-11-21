@@ -1,0 +1,37 @@
+# /etc/systemd/system/swarm-worker@.service: a job worker; enable several (swarm-worker@1, @2 ...).
+#   sudo useradd --system --home /var/lib/swarm --create-home swarm
+#   sudo -u swarm python3 -m venv /var/lib/swarm/venv
+#   sudo -u swarm /var/lib/swarm/venv/bin/pip install "multi-agent-swarm[server,pdf]"
+#   sudo install -m 600 -o root -g swarm env.example /etc/swarm/env   # then edit it
+#   sudo systemctl enable --now swarm-api swarm-worker@1 swarm-worker@2
+[Unit]
+Description=Multi-Agent Swarm worker %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=swarm
+Group=swarm
+EnvironmentFile=/etc/swarm/env
+Environment=SWARM_STATE_DIR=/var/lib/swarm/state SWARM_CACHE_DIR=/var/lib/swarm/cache SWARM_LOG_FORMAT=json
+ExecStart=/var/lib/swarm/venv/bin/swarm worker --concurrency 2
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=45
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/swarm
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

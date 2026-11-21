@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+- **A production-ready server** (`docs/deployment.md`):
+  - **Durable jobs:** a SQLite job queue in WAL mode, shared by the API and worker
+    processes. Workers claim jobs in a transaction, heartbeat, and are recovered after a
+    crash (up to 2 attempts). On SIGTERM they hand running jobs back to the queue. Jobs can
+    be cancelled and time out, and old ones are cleaned up after a retention period.
+  - **`swarm worker`** for scaling jobs apart from the API (`swarm serve --no-worker`).
+    `swarm serve` still runs one embedded worker by default.
+  - **Per-user API keys** (`swarm keys`): stored only as hashes, each seeing only its own
+    jobs, with daily dollar budgets (counting reserved caps) and requests-per-minute limits.
+    The server refuses a public interface until a key exists.
+  - **New job types over the API:** `POST /api/jobs` takes research, `write` and `doc`; there
+    is also `DELETE /api/jobs/{id}` to cancel, and `/api/me`. Progress events resume after a
+    reconnect.
+  - **Observability:** Prometheus `/metrics` (HTTP counters and latency histograms, plus job,
+    spend and queue figures from the database), `/readyz`, JSON logs with request ids, and
+    an `X-Request-ID` header on every response.
+  - **Hardening:** security headers (CSP, frame-ancestors, nosniff and others), a request
+    size limit, configurable CORS and trusted proxies.
+- **Deployment kits:**
+  - a multi-stage, non-root image that works on a read-only filesystem;
+  - `deploy/compose.yaml` with Caddy for automatic HTTPS and scalable workers;
+  - Kubernetes manifests with probes, a restricted security context and an Ingress;
+  - hardened systemd units.
+- **CI and release:** CI builds the image and smoke-tests it the way it runs in production
+  (`scripts/container_smoke.sh`). Releases publish multi-arch images to ghcr.io with
+  provenance and an SBOM.
+
 ## 3.2.0 — build, write, analyze, review, doc, and batch task kinds
 - **Five new workflows** (`docs/workflows.md`), each parallel, each checked by something other than
   the model, on Claude or any OpenAI-compatible provider, with a hard `--max-usd` cap:

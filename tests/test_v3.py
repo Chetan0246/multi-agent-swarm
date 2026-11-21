@@ -269,7 +269,7 @@ def test_server_end_to_end_with_mock(tmp_path, monkeypatch):
         assert c.get(f"/api/jobs/{f.json()['id']}", headers=auth).json()["parent"] == job_id
         bad = c.post("/api/research", json={"question": "Q?", "preset": "huge"}, headers=auth)
         assert bad.status_code == 422
-    assert list(tmp_path.glob("*.json"))  # finished jobs persisted
+    assert (tmp_path / "jobs.sqlite").exists()  # jobs persist in the queue database
 
 
 def test_cost_label_marks_mock_runs_as_simulated():

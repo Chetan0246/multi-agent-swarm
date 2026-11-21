@@ -35,6 +35,21 @@ jobs:
       - run: pip install '.[all]'
       - run: pip-audit --desc on
 
+  container:
+    # The production image, built and exercised the way it runs: read-only, no capabilities,
+    # non-root, token auth, a real job through the API and the worker.
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t swarm:test .
+      - run: scripts/container_smoke.sh swarm:test
+      - name: Compose and Kubernetes files are valid
+        run: |
+          cp deploy/.env.example deploy/.env
+          docker compose -f deploy/compose.yaml config --quiet
+          python3 -c "import yaml; [d for d in yaml.safe_load_all(open('deploy/k8s/swarm.yaml'))]"
+
   bench-smoke:
     # The simulator benchmark is the regression guard for the scheduler's trade-offs.
     runs-on: ubuntu-latest

@@ -1,0 +1,20 @@
+# HTTPS in front of the API, with a certificate from Let's Encrypt for $SWARM_DOMAIN.
+{$SWARM_DOMAIN} {
+	encode zstd gzip
+	# Live progress is Server-Sent Events: stream responses without buffering.
+	reverse_proxy api:8000 {
+		flush_interval -1
+		header_up X-Request-ID {http.request.uuid}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	request_body {
+		max_size 2MB
+	}
+	log {
+		output stdout
+		format json
+	}
+}

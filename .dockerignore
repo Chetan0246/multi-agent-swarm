@@ -11,3 +11,14 @@ evals
 scripts
 .claude
 .swarm
+
+# never send local secrets or personal config to a build
+.env
+**/.env
+swarm.toml
+demo.*
+deploy
+site
+reports
+research_notes
+dist

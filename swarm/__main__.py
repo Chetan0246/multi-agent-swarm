@@ -282,7 +282,43 @@ def cmd_doctor(a: argparse.Namespace) -> None:
 def cmd_serve(a: argparse.Namespace) -> None:
     from .server import serve
 
-    serve(host=a.host, port=a.port, config_path=a.config)
+    serve(host=a.host, port=a.port, config_path=a.config, embedded_worker=not a.no_worker, insecure=a.insecure)
+
+
+def cmd_worker(a: argparse.Namespace) -> None:
+    from .server import state_dir
+    from .worker import run_worker
+
+    run_worker(a.db or str(state_dir() / "jobs.sqlite"), a.concurrency, a.config, a.timeout)
+
+
+def cmd_keys(a: argparse.Namespace) -> None:
+    from .auth import create_key, list_keys, revoke_key
+    from .jobs import JobDB
+    from .server import state_dir
+
+    db = JobDB(a.db or state_dir() / "jobs.sqlite")
+    if a.action == "create":
+        if not a.name:
+            raise ValueError("keys create needs --name")
+        kid, key = create_key(db, a.name, a.daily_usd, a.rpm, a.admin)
+        print(key)
+        print(f"key id {kid} for {a.name!r}: store it now, it is not shown again"
+              f"{f'; daily budget ${a.daily_usd:.2f}' if a.daily_usd else ''}"
+              f"{f'; {a.rpm} requests/min' if a.rpm else ''}{'; admin' if a.admin else ''}", file=sys.stderr)
+    elif a.action == "list":
+        import datetime
+
+        for k in list_keys(db):
+            created = datetime.datetime.fromtimestamp(k["created"]).strftime("%Y-%m-%d")
+            state = "revoked" if k["revoked"] else "active"
+            print(f"{k['id']}  {k['name']:<20} {state:<8} created {created}  "
+                  f"daily ${k['daily_usd'] if k['daily_usd'] is not None else '-'}  rpm {k['rpm'] or '-'}"
+                  f"{'  admin' if k['admin'] else ''}")
+    else:
+        if not a.id:
+            raise ValueError("keys revoke needs a key id (see `swarm keys list`)")
+        print("revoked" if revoke_key(db, a.id) else "no active key with that id")
 
 
 def cmd_eval(a: argparse.Namespace) -> None:
@@ -558,7 +594,26 @@ def main() -> None:
     sv.add_argument("--host", default="127.0.0.1")
     sv.add_argument("--port", type=int, default=8000)
     sv.add_argument("--config", default=None)
+    sv.add_argument("--no-worker", action="store_true", help="API only; run `swarm worker` processes for jobs")
+    sv.add_argument("--insecure", action="store_true", help="allow a public interface without any API key")
     sv.set_defaults(fn=cmd_serve)
+
+    wk = sub.add_parser("worker", help="run queued server jobs (scale these out beside `swarm serve --no-worker`)")
+    wk.add_argument("--concurrency", type=int, default=2, help="jobs at once in this process")
+    wk.add_argument("--timeout", type=float, default=1800.0, help="seconds before a job is stopped")
+    wk.add_argument("--db", default=None, help="job database (default $SWARM_STATE_DIR/jobs.sqlite)")
+    wk.add_argument("--config", default=None)
+    wk.set_defaults(fn=cmd_worker)
+
+    ks = sub.add_parser("keys", help="manage server API keys: create, list, revoke")
+    ks.add_argument("action", choices=["create", "list", "revoke"])
+    ks.add_argument("id", nargs="?", help="key id (revoke)")
+    ks.add_argument("--name", default=None)
+    ks.add_argument("--daily-usd", type=float, default=None, help="daily dollar budget")
+    ks.add_argument("--rpm", type=int, default=None, help="requests per minute")
+    ks.add_argument("--admin", action="store_true", help="sees all jobs and /metrics")
+    ks.add_argument("--db", default=None)
+    ks.set_defaults(fn=cmd_keys)
 
     e = sub.add_parser("eval", help="evaluate deep research vs a single agent on known-answer questions")
     e.add_argument("path", nargs="?", default="evals/questions.jsonl")

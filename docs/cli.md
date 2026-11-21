@@ -31,7 +31,9 @@
 
 | Command | What it does |
 |---|---|
-| `swarm serve [--host --port]` | web UI and REST API |
+| `swarm serve [--host --port --no-worker]` | web UI and REST API, with one embedded worker unless `--no-worker`; refuses a public interface without a key |
+| `swarm worker [--concurrency N]` | runs queued server jobs; run several beside `swarm serve --no-worker` |
+| `swarm keys create\|list\|revoke` | server API keys: `--name`, `--daily-usd`, `--rpm`, `--admin` |
 | `swarm doctor [--online]` | check install, keys and config |
 | `swarm eval [questions.jsonl]` | known-answer evaluation against a single-agent baseline (`--estimate`, `--mock`, `--max-usd-total`) |
 | `swarm bench` | offline benchmark of the scheduling engine |

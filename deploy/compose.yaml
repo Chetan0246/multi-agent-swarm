@@ -1,0 +1,58 @@
+# Production on one host: HTTPS (Caddy, automatic Let's Encrypt), an API process and
+# separately scalable workers, sharing one job database on a named volume.
+#
+#   cp deploy/.env.example deploy/.env      # fill in keys and your domain
+#   docker compose -f deploy/compose.yaml up -d --build
+#   docker compose -f deploy/compose.yaml exec api swarm keys create --name me --daily-usd 5
+#   docker compose -f deploy/compose.yaml up -d --scale worker=3
+#
+# Workers re-queue their running jobs on shutdown (stop_grace_period gives them time), so
+# `up -d` for an upgrade never loses work.
+
+x-swarm: &swarm
+  build: ..
+  image: ghcr.io/chetan0246/multi-agent-swarm:latest
+  env_file: .env
+  volumes:
+    - swarm-data:/data
+  read_only: true
+  tmpfs:
+    - /tmp
+    - /home/app:uid=10001,gid=10001
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 45s
+
+services:
+  api:
+    <<: *swarm
+    command: ["swarm", "serve", "--host", "0.0.0.0", "--port", "8000", "--no-worker"]
+    environment:
+      SWARM_ALLOWED_HOSTS: ${SWARM_DOMAIN:?set SWARM_DOMAIN in deploy/.env},api
+      SWARM_TRUSTED_PROXIES: "*"   # only Caddy can reach this port (no published ports)
+    expose: ["8000"]
+
+  worker:
+    <<: *swarm
+    command: ["swarm", "worker", "--concurrency", "2"]
+    healthcheck:
+      disable: true   # no HTTP port; Docker restarts it if it exits
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      SWARM_DOMAIN: ${SWARM_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [api]
+
+volumes:
+  swarm-data:
+  caddy-data:
+  caddy-config:
