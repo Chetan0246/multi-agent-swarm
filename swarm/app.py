@@ -1,10 +1,13 @@
 """One place that turns user options into a configured research run (CLI and server share it)."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
 from .config import cache_dir, env_overrides, load_config
+from .errors import ConfigError
+from .pricing import PRICES, Price, register_price
 from .research import (
     AnthropicResearchLLM,
     MockResearchLLM,
@@ -41,6 +44,34 @@ class ResearchOptions:
     check_claims: bool | None = None
     use_cache: bool = True
     config_path: str | None = None
+    provider: str | None = None  # anthropic (Claude) | openai (any OpenAI-compatible API)
+    base_url: str | None = None  # OpenAI-compatible endpoint, e.g. https://host/v1
+    price: str | None = None  # "IN,OUT[,CACHED]" USD per million tokens, for unlisted models
+    api_key_env: str | None = None  # variable holding the provider's key (default OPENAI_API_KEY)
+
+
+def register_prices(file_cfg: dict[str, Any], models: list[str], price: str | None = None) -> None:
+    """Prices for models the built-in table doesn't know (e.g. an OpenAI-compatible provider's).
+
+    From `--price IN,OUT[,CACHED]` / SWARM_PRICE (applies to `models`) or swarm.toml:
+        [prices]
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017" = [0.10, 0.40]        # or [in, out, cached]
+    Without a cached price, cached prompt tokens are billed as ordinary input (never understated).
+    """
+    table: dict[str, Any] = dict(file_cfg.get("prices", {}))
+    if price:
+        try:
+            nums = [float(x) for x in price.split(",")]
+        except ValueError as e:
+            raise ConfigError(f"--price {price!r}: expected IN,OUT or IN,OUT,CACHED (USD per million)") from e
+        for m in models:
+            table[m] = nums
+    for model, nums in table.items():
+        if not isinstance(nums, (list, tuple)) or len(nums) not in (2, 3) or min(nums) < 0:
+            raise ConfigError(f"price for {model!r} must be [in, out] or [in, out, cached] in USD per million")
+        inp, out = float(nums[0]), float(nums[1])
+        cached = float(nums[2]) / inp if len(nums) == 3 and inp > 0 else 1.0
+        register_price(model, Price(inp, out, cache_read_mult=cached, cache_write_mult=1.0))
 
 
 def resolve(opts: ResearchOptions) -> tuple[ResearchLLM, ResearchConfig, dict[str, Any]]:
@@ -51,12 +82,30 @@ def resolve(opts: ResearchOptions) -> tuple[ResearchLLM, ResearchConfig, dict[st
     preset = str(pick("preset", "standard"))
     search_kind = "none" if opts.docs_only else pick("search", "tinyfish")
     max_usd = pick("max_usd")
+    base_url = pick("base_url") or os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE")
+    # An explicit base URL, or a model that isn't Claude, implies the OpenAI-compatible provider.
+    # (An endpoint only in the environment doesn't: other tools set OPENAI_BASE_URL too.)
+    model_name = str(pick("model") or "")
+    not_claude = bool(model_name) and not model_name.startswith("claude")
+    provider = str(pick("provider") or ("openai" if pick("base_url") or not_claude else "anthropic"))
+    if provider not in ("anthropic", "openai"):
+        raise ConfigError(f"unknown provider {provider!r} (anthropic or openai)")
+    if provider == "openai" and not opts.mock:
+        if not pick("model"):
+            raise ConfigError("the OpenAI-compatible provider needs a model name",
+                              "pass --model <provider's model id>, e.g. deepseek-ai/DeepSeek-V4.1-Flash-1017")
+        if search_kind == "anthropic":
+            raise ConfigError("--search anthropic works only with Claude",
+                              "use --search tinyfish (free) with the OpenAI-compatible provider")
+    models = [m for m in (pick("model"), pick("worker_model")) if m]
+    register_prices(file_cfg, models, pick("price"))
     cfg = config_from(
         preset, model=pick("model"), max_usd=(None if max_usd == 0 else max_usd),
         max_subquestions=opts.max_subquestions, max_agents=opts.max_agents,
         max_searches=opts.max_searches, check_claims=opts.check_claims)
     info: dict[str, Any] = {"preset": preset, "search": "mock" if opts.mock else search_kind,
-                            "documents": len(opts.docs)}
+                            "documents": len(opts.docs), "provider": "mock" if opts.mock else provider,
+                            "model": cfg.model}
     if opts.mock:
         cfg.free_search = True
         return MockResearchLLM(), cfg, info
@@ -76,9 +125,25 @@ def resolve(opts: ResearchOptions) -> tuple[ResearchLLM, ResearchConfig, dict[st
     cfg.free_search = search_kind != "anthropic"
     if web is not None and isinstance(web, CachedProvider):
         info["cache"] = str(cache_dir() / "web.sqlite")
-    llm = AnthropicResearchLLM(max_searches=cfg.max_searches, search=web, docs=docs, filters=filters,
-                               max_tool_turns=cfg.max_tool_turns, worker_model=pick("worker_model"),
-                               language=pick("language"))
+    llm: ResearchLLM
+    if provider == "openai":
+        from .openai_compat import OpenAICompatLLM
+
+        cached_known = all(PRICES[m].cache_read_mult < 1.0 for m in models if m in PRICES)
+        try:
+            llm = OpenAICompatLLM(base_url=base_url, search=web, docs=docs, filters=filters,
+                                  max_tool_turns=cfg.max_tool_turns, worker_model=pick("worker_model"),
+                                  language=pick("language"), cached_price_known=cached_known,
+                                  api_key_env=str(pick("api_key_env") or "OPENAI_API_KEY"))
+        except Exception:
+            if isinstance(web, CachedProvider):
+                web.db.close()  # don't leak the cache connection when the provider can't start
+            raise
+        info["base_url"] = llm.base_url
+    else:
+        llm = AnthropicResearchLLM(max_searches=cfg.max_searches, search=web, docs=docs, filters=filters,
+                                   max_tool_turns=cfg.max_tool_turns, worker_model=pick("worker_model"),
+                                   language=pick("language"))
     return llm, cfg, info
 
 

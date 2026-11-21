@@ -9,6 +9,12 @@ Config file (TOML), first found of: ./swarm.toml, $SWARM_CONFIG, ~/.config/swarm
     search = "tinyfish"          # tinyfish (free) | anthropic (server-side, $10/1k searches)
     exclude_domains = ["pinterest.com", "quora.com"]
     language = "en"
+    # provider = "openai"        # any OpenAI-compatible API (key in OPENAI_API_KEY)
+    # base_url = "https://your-provider/v1"
+    # model = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+
+    [prices]                     # USD per million tokens, for models not built in
+    # "deepseek-ai/DeepSeek-V4.1-Flash-1017" = [0.10, 0.40]   # [in, out] or [in, out, cached]
 
     [server]
     host = "127.0.0.1"
@@ -62,7 +68,8 @@ def cache_dir() -> Path:
 def env_overrides() -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, env, cast in [("model", "SWARM_MODEL", str), ("max_usd", "SWARM_MAX_USD", float),
-                           ("search", "SWARM_SEARCH", str), ("preset", "SWARM_PRESET", str)]:
+                           ("search", "SWARM_SEARCH", str), ("preset", "SWARM_PRESET", str),
+                           ("provider", "SWARM_PROVIDER", str), ("price", "SWARM_PRICE", str)]:
         if os.environ.get(env):
             try:
                 out[key] = cast(os.environ[env])

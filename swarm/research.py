@@ -479,6 +479,7 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
     sources: list[Citation] = []
     index: dict[str, int] = {}
     quotes: dict[int, list[str]] = {}
+    unanswered: list[tuple[str, str]] = []
     for f in (prior.findings if prior is not None else []):  # follow-up: keep earlier findings
         findings.append(f)
         if f.flags:
@@ -498,6 +499,7 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
         cites = [Citation(**c) for c in d.get("citations", []) if c.get("url")]
         text = d.get("text", "")
         if not text:
+            unanswered.append((t.id, t.prompt))  # every attempt came back empty: say so
             continue
         flags = injection_flags(text, *(c.quote for c in cites))
         f = Finding(t.id, t.prompt, text, cites, r.ok and not flags, r.effort, flags)
@@ -565,6 +567,9 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
                                     f"(marked ⚠).\n")
 
     # 6. excluded findings, sanitising, sources -----------------------------------------------
+    if unanswered and stopped is None:
+        md = md.rstrip() + "\n\n> **Not answered** (no usable answer after every attempt): " + "; ".join(
+            f"{sid} ({q})" for sid, q in unanswered) + ".\n"
     if stopped is not None:
         md = md.rstrip() + ("\n\n> **Research stopped early:** "
                             f"{str(stopped).splitlines()[0]}. Some sub-questions were not researched.\n")
@@ -580,7 +585,10 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
     stats = {
         "subquestions": len(tasks),
         "verified_findings": sum(f.verified for f in findings),
-        "verified_%": round(100 * sum(f.verified for f in findings) / max(1, len(findings)), 1),
+        # Unanswered sub-questions count against the rate: they are research that failed.
+        "verified_%": round(100 * sum(f.verified for f in findings)
+                            / max(1, len(findings) + len(unanswered)), 1),
+        "unanswered_subquestions": len(unanswered),
         "agents": run.agents,
         "worker_calls": run.calls,
         "web_searches": backend.searches,
@@ -592,8 +600,7 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
         "usd_cap": cfg.max_usd,
         "budget_stops": run.counters.get("budget_stops", 0),
         "wall_time_s": round(loop.time() - t0, 2),
-        "escalated": sum(1 for f in findings[len(prior.findings) if prior else 0:]
-                         if f.effort != cfg.efforts[0]),
+        "escalated": sum(1 for t in tasks if run.results[t.id].effort != cfg.efforts[0]),
         "followup_of": prior.question if prior is not None else None,
         **({"search_" + k: v for k, v in getattr(llm, "search_stats", {}).items()}),
         "injection_excluded": len(excluded),
@@ -627,9 +634,114 @@ def _add(a: CallUsage, b: CallUsage) -> None:
     a.output_tokens += b.output_tokens
 
 
-class AnthropicResearchLLM:
-    """Claude with server-side web search/fetch. No client tool loop: searches run on
-    Anthropic's servers inside one request (resumed on `pause_turn`)."""
+class ClientToolsLLM:
+    """What every provider shares: client-side search/read tools over a SearchProvider (free
+    TinyFish, local documents), quote grounding against the retrieved text, and bookkeeping
+    of spend that the engine can't see. Subclasses implement the model calls."""
+
+    def _init_tools(self, search: SearchProvider | None, docs: SearchProvider | None,
+                    filters: SearchFilters | None, max_tool_turns: int, page_chars: int,
+                    worker_model: str | None, language: str | None) -> None:
+        self.search = search
+        self.docs = docs
+        self.filters = filters or SearchFilters()
+        self.max_tool_turns = max_tool_turns
+        self.page_chars = page_chars
+        self.worker_model = worker_model
+        self.language = language
+        self.stats = {"ungrounded_quotes_dropped": 0, "tool_calls": 0}
+        # Tokens billed by worker calls that then failed (e.g. a 5xx on tool turn 4): the
+        # engine never sees their usage, so deep_research adds it to the run's cost.
+        self._lost = CallUsage()
+
+    async def _close_providers(self) -> None:
+        for p in (self.search, self.docs):
+            if (close := getattr(p, "aclose", None)) is not None:
+                await close()
+
+    def take_lost_usage(self) -> CallUsage:
+        lost, self._lost = self._lost, CallUsage()
+        return lost
+
+    @property
+    def search_stats(self) -> dict:
+        out = dict(self.stats)
+        for p in (self.search, self.docs):
+            for k, v in (getattr(p, "stats", None) or {}).items():
+                out[f"{getattr(p, 'name', 'provider')}_{k}"] = v
+        return out
+
+    def _worker_prompt(self, question: str, sub_question: str) -> str:
+        lang = f" Write the answer in {self.language}." if self.language else ""
+        return f"Overall question (context only): {question}\n\nYour sub-question: {sub_question}{lang}"
+
+    async def _run_tool(self, name: str, args: dict, corpus: dict[str, tuple[str, str]]) -> str:
+        """Execute one client-side tool; record returned text in `corpus` for quote checks."""
+        self.stats["tool_calls"] += 1
+        if name not in ("web_search", "web_fetch", "search_documents", "read_document"):
+            return f"Tool error: unknown tool {name!r}"
+        try:
+            if name in ("web_search", "search_documents"):
+                provider = self.search if name == "web_search" else self.docs
+                assert provider is not None
+                f = self.filters
+                if name == "web_search" and args.get("kind") in ("news", "research_paper"):
+                    f = SearchFilters(**{**f.__dict__, "domain_type": args["kind"]})
+                hits = await provider.search(str(args.get("query", ""))[:400], f)
+                lines = []
+                for i, h in enumerate(hits[:10], 1):
+                    corpus.setdefault(h.url, (h.title, ""))
+                    t, txt = corpus[h.url]
+                    corpus[h.url] = (t or h.title, txt + "\n" + h.snippet)
+                    lines.append(f"{i}. {h.title}\n   URL: {h.url}\n   {h.snippet}")
+                body = "\n".join(lines) or "No results."
+            else:
+                provider = self.search if name == "web_fetch" else self.docs
+                assert provider is not None
+                urls = [str(u) for u in (args.get("urls") or [])][:3]
+                pages = await provider.fetch(urls)
+                parts = []
+                for pg in pages:
+                    if pg.error:
+                        parts.append(f"URL: {pg.url}\nERROR: {pg.error}")
+                        continue
+                    text = pg.text[: self.page_chars]
+                    t, prev = corpus.get(pg.url, (pg.title, ""))
+                    corpus[pg.url] = (pg.title or t, prev + "\n" + text)
+                    parts.append(f"URL: {pg.url}\nTITLE: {pg.title}\n{text}")
+                body = "\n\n---\n\n".join(parts) or "Nothing fetched."
+        except (SearchAuthError, SearchQuotaExhausted):
+            raise  # fatal: every later search fails too, so stop the run instead of paying on
+        except Exception as e:  # other tool errors go back to the model, not up the stack
+            return f"Tool error: {e}"
+        return f"<untrusted_content>\n{body}\n</untrusted_content>"
+
+    def _ground(self, final_text: str, corpus: dict[str, tuple[str, str]]) -> tuple[str, list[Citation]]:
+        """Parse the worker's JSON answer; keep only sources whose quote is in the retrieved text."""
+        data = _parse_json_obj(final_text)
+        prose = final_text.strip()
+        if not data and prose and not prose.startswith(("{", "```")):
+            # Plain prose instead of JSON: keep it (it fails the citation gate and shows as
+            # unverified) rather than losing the worker's research without a trace.
+            self.stats["answers_not_json"] = self.stats.get("answers_not_json", 0) + 1
+            return prose[:4000], []
+        norm = {u: (t, normalize(x)) for u, (t, x) in corpus.items()}
+        cites: list[Citation] = []
+        for s in data.get("sources", []) or []:
+            if not isinstance(s, dict):
+                continue
+            url, quote = str(s.get("url", "")), str(s.get("quote", ""))[:400]
+            src = norm.get(url)
+            if src and quote_is_grounded(quote, src[1]):
+                cites.append(Citation(url, src[0], quote))
+            else:
+                self.stats["ungrounded_quotes_dropped"] += 1
+        return str(data.get("answer", "")).strip(), cites
+
+
+class AnthropicResearchLLM(ClientToolsLLM):
+    """Claude. With a search provider or documents: a client-side tool loop. Without either:
+    Claude's server-side web search/fetch inside one request (resumed on `pause_turn`)."""
 
     def __init__(self, max_searches: int = 5, max_fetches: int = 3, use_fallbacks: bool = True,
                  timeout: float = 600.0, max_continuations: int = 4,
@@ -646,40 +758,16 @@ class AnthropicResearchLLM:
         self.max_fetches = max_fetches
         self.use_fallbacks = use_fallbacks
         self.max_continuations = max_continuations
-        self.search = search
-        self.docs = docs
-        self.filters = filters or SearchFilters()
-        self.max_tool_turns = max_tool_turns
-        self.page_chars = page_chars
-        self.worker_model = worker_model
-        self.language = language
-        self.stats = {"ungrounded_quotes_dropped": 0, "tool_calls": 0}
-        # Tokens billed by worker calls that then failed (e.g. a 5xx on tool turn 4): the
-        # engine never sees their usage, so deep_research adds it to the run's cost.
-        self._lost = CallUsage()
+        self._init_tools(search, docs, filters, max_tool_turns, page_chars, worker_model, language)
 
     async def aclose(self) -> None:
         """Close the search providers' HTTP clients / cache database and the Claude client."""
-        for p in (self.search, self.docs):
-            if (close := getattr(p, "aclose", None)) is not None:
-                await close()
+        await self._close_providers()
         await self.client.close()
-
-    def take_lost_usage(self) -> CallUsage:
-        lost, self._lost = self._lost, CallUsage()
-        return lost
 
     @property
     def paid_search(self) -> bool:
         return self.search is None and self.docs is None
-
-    @property
-    def search_stats(self) -> dict:
-        out = dict(self.stats)
-        for p in (self.search, self.docs):
-            for k, v in (getattr(p, "stats", None) or {}).items():
-                out[f"{getattr(p, 'name', 'provider')}_{k}"] = v
-        return out
 
     async def _create(self, **kw):
         a = self._a
@@ -764,53 +852,10 @@ class AnthropicResearchLLM:
                                           (getattr(c, "cited_text", "") or "")[:300]))
         return "".join(text_parts).strip(), cites, usage, searches
 
-    async def _run_tool(self, name: str, args: dict, corpus: dict[str, tuple[str, str]]) -> str:
-        """Execute one client-side tool; record returned text in `corpus` for quote checks."""
-        self.stats["tool_calls"] += 1
-        if name not in ("web_search", "web_fetch", "search_documents", "read_document"):
-            return f"Tool error: unknown tool {name!r}"
-        try:
-            if name in ("web_search", "search_documents"):
-                provider = self.search if name == "web_search" else self.docs
-                assert provider is not None
-                f = self.filters
-                if name == "web_search" and args.get("kind") in ("news", "research_paper"):
-                    f = SearchFilters(**{**f.__dict__, "domain_type": args["kind"]})
-                hits = await provider.search(str(args.get("query", ""))[:400], f)
-                lines = []
-                for i, h in enumerate(hits[:10], 1):
-                    corpus.setdefault(h.url, (h.title, ""))
-                    t, txt = corpus[h.url]
-                    corpus[h.url] = (t or h.title, txt + "\n" + h.snippet)
-                    lines.append(f"{i}. {h.title}\n   URL: {h.url}\n   {h.snippet}")
-                body = "\n".join(lines) or "No results."
-            else:
-                provider = self.search if name == "web_fetch" else self.docs
-                assert provider is not None
-                urls = [str(u) for u in (args.get("urls") or [])][:3]
-                pages = await provider.fetch(urls)
-                parts = []
-                for pg in pages:
-                    if pg.error:
-                        parts.append(f"URL: {pg.url}\nERROR: {pg.error}")
-                        continue
-                    text = pg.text[: self.page_chars]
-                    t, prev = corpus.get(pg.url, (pg.title, ""))
-                    corpus[pg.url] = (pg.title or t, prev + "\n" + text)
-                    parts.append(f"URL: {pg.url}\nTITLE: {pg.title}\n{text}")
-                body = "\n\n---\n\n".join(parts) or "Nothing fetched."
-        except (SearchAuthError, SearchQuotaExhausted):
-            raise  # fatal: every later search fails too, so stop the run instead of paying on
-        except Exception as e:  # other tool errors go back to the model, not up the stack
-            return f"Tool error: {e}"
-        return f"<untrusted_content>\n{body}\n</untrusted_content>"
-
     async def _investigate_with_tools(self, question, sub_question, model, effort):
         tools = _tool_defs(web=self.search is not None, docs=self.docs is not None)
-        lang = f" Write the answer in {self.language}." if self.language else ""
-        messages: list[dict[str, Any]] = [{"role": "user", "content":
-                                           f"Overall question (context only): {question}\n\n"
-                                           f"Your sub-question: {sub_question}{lang}"}]
+        messages: list[dict[str, Any]] = [{"role": "user",
+                                           "content": self._worker_prompt(question, sub_question)}]
         usage = CallUsage()
         corpus: dict[str, tuple[str, str]] = {}  # url -> (title, retrieved text)
         msg = None
@@ -843,17 +888,8 @@ class AnthropicResearchLLM:
                 for b, out in zip(calls, outputs)]})
         if msg is None or msg.stop_reason == "refusal":
             return "", [], usage, 0
-        data = _parse_json_obj("".join(b.text for b in msg.content if b.type == "text"))
-        norm = {u: (t, normalize(x)) for u, (t, x) in corpus.items()}
-        cites: list[Citation] = []
-        for s in data.get("sources", []) or []:
-            url, quote = str(s.get("url", "")), str(s.get("quote", ""))[:400]
-            src = norm.get(url)
-            if src and quote_is_grounded(quote, src[1]):
-                cites.append(Citation(url, src[0], quote))
-            else:
-                self.stats["ungrounded_quotes_dropped"] += 1
-        return str(data.get("answer", "")).strip(), cites, usage, 0  # no per-search fee
+        answer, cites = self._ground("".join(b.text for b in msg.content if b.type == "text"), corpus)
+        return answer, cites, usage, 0  # no per-search fee
 
     async def synthesize(self, question, findings_block, n_sources, model, effort):
         msg = await self._create(

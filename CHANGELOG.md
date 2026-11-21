@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+- **Any OpenAI-compatible model provider** (DeepSeek, Together, DeepInfra, OpenRouter, vLLM,
+  Ollama ...): `--provider openai --base-url URL --model ID --price IN,OUT`, or the same in
+  `swarm.toml`. It uses the same pipeline as Claude: free TinyFish search as function tools,
+  quote grounding, claim checking, and the cost estimate and cap. The search tools, grounding
+  and spend bookkeeping now live in a shared `ClientToolsLLM` base class.
+- Prices for models without a built-in price: `--price`, `SWARM_PRICE` or a `[prices]` table.
+  A model that isn't Claude selects the OpenAI-compatible provider automatically, and
+  `--api-key-env NAME` (or `api_key_env`) reads the key from a provider-specific variable.
+- Verified live on DeepSeek V4.1 Flash through River: 3/3 sub-questions verified, 19
+  sources, $0.016, 77 s. The answer-recovery step rescued 2 of the 3 workers.
+- `.env` files are gitignored.
+- Fixes found in the first live run (DeepSeek V4.1 Flash, quick preset, $0.02):
+  - A sub-question whose every attempt came back empty was dropped silently, while the run
+    still reported "100% verified". It is now listed in the report as not answered, counts
+    against the verified rate, and is shown in the CLI summary.
+  - When the last tool turn still asks for tools, or cuts its JSON off, the worker is now
+    asked once more for its final answer instead of losing its research.
+  - Prose answers that aren't JSON are kept as unverified findings.
+  - "escalated" now counts every sub-question that needed a higher effort, and the CLI says
+    "claim check off" instead of "n/a%".
+- `swarm eval` counts the spend of a run that fails partway through, so `--max-usd-total`
+  isn't undercounted.
+- README benchmark figures replaced with measured ranges over 18 runs.
+
 ## 3.0.1 — bug fixes
 Fixes from a code audit, each with a regression test (`tests/test_audit.py`).
 

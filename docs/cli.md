@@ -17,6 +17,10 @@
 | `--max-usd X` | preset | hard dollar cap (0 = none) |
 | `--estimate` | | print the estimate and exit |
 | `--model` / `--worker-model` | claude-opus-5-5 | models for planning and writing, and for workers |
+| `--provider anthropic\|openai` | anthropic | Claude, or any OpenAI-compatible API (see [Configuration](configuration.md#other-model-providers)) |
+| `--base-url URL` | `$OPENAI_BASE_URL` | OpenAI-compatible endpoint, e.g. `https://host/v1` (implies `--provider openai`) |
+| `--api-key-env NAME` | OPENAI_API_KEY | environment variable that holds the provider key, e.g. `RIVER_API_KEY` |
+| `--price IN,OUT[,CACHED]` | | USD per million tokens, for a model with no built-in price |
 | `--max-subquestions`, `--max-agents`, `--max-searches` | preset | fine-grained limits |
 | `--no-claim-check` | | skip the claim check (cheaper, less trustworthy) |
 | `--no-cache` | | bypass the local search/fetch cache |

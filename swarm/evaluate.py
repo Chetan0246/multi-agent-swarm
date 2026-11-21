@@ -46,6 +46,45 @@ class EvalResult:
     error: str | None = None
 
 
+class _Meter:
+    """Wraps a ResearchLLM and adds up the dollars of every call it makes.
+
+    A deep-research run that fails partway (quota gone, a 4xx at synthesis) raises before it
+    can report its cost, yet its earlier calls were billed. Metering the calls themselves
+    lets the eval's total cap count that spend instead of treating it as $0.
+    """
+
+    def __init__(self, llm: ResearchLLM):
+        self._llm = llm
+        self.usd = 0.0
+
+    def __getattr__(self, name: str) -> Any:  # worker_model, take_lost_usage, search_stats...
+        return getattr(self._llm, name)
+
+    def _price(self, model: str) -> str:
+        return getattr(self._llm, "worker_model", None) or model
+
+    async def plan(self, question, max_subquestions, model, effort):
+        subs, usage = await self._llm.plan(question, max_subquestions, model, effort)
+        self.usd += usage_usd(model, usage)
+        return subs, usage
+
+    async def investigate(self, question, sub_question, model, effort):
+        text, cites, usage, searches = await self._llm.investigate(question, sub_question, model, effort)
+        self.usd += usage_usd(self._price(model), usage, searches)
+        return text, cites, usage, searches
+
+    async def synthesize(self, question, findings_block, n_sources, model, effort):
+        md, usage = await self._llm.synthesize(question, findings_block, n_sources, model, effort)
+        self.usd += usage_usd(model, usage)
+        return md, usage
+
+    async def judge(self, claims, model, effort):
+        verdicts, usage = await self._llm.judge(claims, model, effort)
+        self.usd += usage_usd(model, usage)
+        return verdicts, usage
+
+
 def load_items(path: str | Path) -> list[EvalItem]:
     items = []
     for line in Path(path).read_text().splitlines():
@@ -95,15 +134,17 @@ async def run_eval(items: list[EvalItem], swarm_llm: ResearchLLM, single_llm: Re
             if stop.is_set():
                 return
             t0 = time.perf_counter()
+            meter = _Meter(swarm_llm)  # per question, so concurrent questions don't mix
             try:
-                rep = await deep_research(item.question, swarm_llm, cfg)
+                rep = await deep_research(item.question, meter, cfg)
                 s = rep.stats
                 r = EvalResult(item.id, "swarm", is_correct(rep.markdown, item.answers), s["usd"],
                                time.perf_counter() - t0,
                                {k: s.get(k) for k in ("verified_%", "claim_support_%", "sources",
                                                       "web_searches", "agents", "injection_excluded")})
-            except Exception as e:  # keep evaluating the rest
-                r = EvalResult(item.id, "swarm", False, 0.0, time.perf_counter() - t0, error=repr(e)[:200])
+            except Exception as e:  # keep evaluating the rest; its spend still counts
+                r = EvalResult(item.id, "swarm", False, round(meter.usd, 4), time.perf_counter() - t0,
+                               error=repr(e)[:200])
             results.append(r)
             spent += r.usd
             if single_llm is not None:

@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .app import ResearchOptions, aclose, resolve, run_research
+from .app import ResearchOptions, aclose, register_prices, resolve, run_research
 from .config import load_config
 from .export import from_json, to_html, to_json
 from .pricing import estimate_research
@@ -182,7 +182,12 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None):
         from .research import PRESETS
 
         p = PRESETS.get(preset, PRESETS["standard"])
-        model = os.environ.get("SWARM_MODEL") or cfg.get("research", {}).get("model", "claude-opus-5-5")
+        rc = cfg.get("research", {})
+        model = os.environ.get("SWARM_MODEL") or rc.get("model", "claude-opus-5-5")
+        try:
+            register_prices(cfg, [model], os.environ.get("SWARM_PRICE") or rc.get("price"))
+        except Exception as err:
+            raise HTTPException(400, str(err)) from err
         e = estimate_research(model, p["max_subquestions"], p["max_searches"], p["efforts"],
                               free_search=search != "anthropic")
         return {"low_usd": round(e.low_usd, 2), "high_usd": round(e.high_usd, 2), "text": str(e),

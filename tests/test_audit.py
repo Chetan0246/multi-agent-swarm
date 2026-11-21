@@ -244,3 +244,14 @@ def test_server_follow_up_inherits_options_and_validates_kind(tmp_path, monkeypa
         assert f.status_code == 202, f.text
         child = app.state.store.jobs[f.json()["id"]]
         assert child.options["preset"] == "quick" and child.options["include_domains"] == ["nrel.gov"]
+
+
+def test_eval_counts_spend_of_a_failed_run():
+    from swarm.evaluate import EvalItem, run_eval
+
+    class FailsAtSynthesis(MockResearchLLM):
+        async def synthesize(self, *a):
+            raise RuntimeError("400 at synthesis")
+
+    rs = asyncio.run(run_eval([EvalItem("1", "Q?", ["x"])], FailsAtSynthesis(), None, config_from("quick")))
+    assert rs[0].error and rs[0].usd > 0  # plan + workers were billed before the failure

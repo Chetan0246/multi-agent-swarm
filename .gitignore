@@ -14,3 +14,7 @@ tasks.jsonl
 site/
 .claude/
 .coverage
+
+# local secrets
+.env
+.env.*

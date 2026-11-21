@@ -155,13 +155,15 @@ def cmd_research(a: argparse.Namespace) -> None:
         recency_days=a.recency_days, kind="news" if a.news else "research_paper" if a.papers else None,
         language=a.language, model=a.model, worker_model=a.worker_model, max_usd=a.max_usd,
         max_subquestions=a.max_subquestions, max_agents=a.max_agents, max_searches=a.max_searches,
-        check_claims=False if a.no_claim_check else None, use_cache=not a.no_cache, config_path=a.config)
+        check_claims=False if a.no_claim_check else None, use_cache=not a.no_cache, config_path=a.config,
+        provider=a.provider, base_url=a.base_url, price=a.price, api_key_env=a.api_key_env)
     llm, cfg, info = resolve(opts)
     asyncio.run(aclose(llm))  # resolved only for the estimate; run_research builds its own
     est = estimate_research(cfg.model, cfg.max_subquestions, cfg.max_searches, cfg.efforts,
                             free_search=cfg.free_search)
     cap = f"cap ${cfg.max_usd:.2f}" if cfg.max_usd else "no cap"
-    print(f"preset {info['preset']}, search {info['search']}, estimate {est} ({cap})"
+    print(f"{info['provider']} {info['model']}, preset {info['preset']}, search {info['search']}, "
+          f"estimate {est} ({cap})"
           f"{' [mock: no real spend]' if a.mock else ''}", file=sys.stderr)
     if a.estimate:
         return
@@ -187,9 +189,11 @@ def cmd_research(a: argparse.Namespace) -> None:
     if a.verbose:
         print(json.dumps(report.stats, indent=2), file=sys.stderr)
     s = report.stats
+    claims = (f"claim support {s['claim_support_%']}%" if s.get("claim_support_%") is not None
+              else "claim check off")
+    missing = f", {s['unanswered_subquestions']} sub-question(s) unanswered" if s.get("unanswered_subquestions") else ""
     print(f"cost {cost_label(s)} (estimate {s['usd_estimate']}), {s['wall_time_s']}s, "
-          f"{s['verified_%']}% findings verified, claim support {s.get('claim_support_%', 'n/a')}%",
-          file=sys.stderr)
+          f"{s['verified_%']}% findings verified{missing}, {claims}", file=sys.stderr)
 
 
 def _csv(v: str | None) -> list[str] | None:
@@ -217,6 +221,15 @@ def cmd_doctor(a: argparse.Namespace) -> None:
     has_claude = any(os.environ.get(k) for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"))
     print(f"{ok(has_claude)}Anthropic credentials in environment"
           f"{'' if has_claude else ' (set ANTHROPIC_API_KEY, or rely on `ant auth login`)'}")
+    env_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE")
+    r_cfg = {**cfg.get("research", {}),
+             **{k: v for k, v in (("provider", os.environ.get("SWARM_PROVIDER")), ("base_url", env_url)) if v}}
+    if r_cfg.get("provider") == "openai" or r_cfg.get("base_url"):
+        has_oa = bool(os.environ.get("OPENAI_API_KEY"))
+        print(f"{ok(bool(r_cfg.get('base_url')))}OpenAI-compatible base URL: {r_cfg.get('base_url') or 'not set'}")
+        print(f"{ok(has_oa)}OPENAI_API_KEY{'' if has_oa else ' missing'}")
+    else:
+        print("-- OpenAI-compatible provider: not configured (optional: --provider openai)")
     has_tf = bool(os.environ.get("TINYFISH_API_KEY"))
     print(f"{ok(has_tf)}TINYFISH_API_KEY{'' if has_tf else ' missing: free key at https://agent.tinyfish.ai/api-keys'}")
     print(f"{ok(True)}cache dir: {cache_dir()}")
@@ -354,6 +367,16 @@ def main() -> None:
     q.add_argument("--mock", action="store_true", help="offline demo, no API calls")
     q.add_argument("--model", default=None, help="model for planning/synthesis (default claude-opus-5-5)")
     q.add_argument("--worker-model", default=None, help="model for research workers (default: --model)")
+    q.add_argument("--provider", choices=["anthropic", "openai"], default=None,
+                   help="anthropic (Claude, default) or openai: any OpenAI-compatible API "
+                        "(OPENAI_API_KEY, OPENAI_BASE_URL)")
+    q.add_argument("--base-url", default=None, help="OpenAI-compatible endpoint, e.g. https://host/v1 "
+                                                    "(implies --provider openai)")
+    q.add_argument("--api-key-env", default=None, metavar="NAME",
+                   help="environment variable holding the provider's key (default OPENAI_API_KEY), "
+                        "e.g. RIVER_API_KEY")
+    q.add_argument("--price", default=None, metavar="IN,OUT[,CACHED]",
+                   help="USD per million tokens for a model with no built-in price")
     q.add_argument("--max-subquestions", type=int, default=None)
     q.add_argument("--max-agents", type=int, default=None)
     q.add_argument("--max-searches", type=int, default=None, help="searches per worker call")

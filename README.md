@@ -10,7 +10,7 @@ those quotes, and anything unsupported is marked.
 
 [![CI](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
-![Tests](https://img.shields.io/badge/tests-61%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-90%20passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-informational)](https://chetan0246.github.io/multi-agent-swarm/)
 
@@ -75,6 +75,8 @@ swarm research "question" --papers --include-domains arxiv.org,nature.com
 swarm research "question" --docs ./papers ./notes.md           # your files + the web
 swarm research "question" --docs ./contracts --docs-only       # your files only
 swarm research "and costs?" --follow-up r.json --out r2.html   # build on an earlier report
+swarm research "question" --base-url https://host/v1 --model MODEL --price 0.10,0.40
+                                                               # any OpenAI-compatible provider
 swarm serve                                                    # web UI on http://127.0.0.1:8000
 swarm doctor --online                                          # check keys and setup
 swarm eval --estimate                                          # known-answer evaluation vs a single agent
@@ -105,8 +107,11 @@ workloads (`swarm run`, `swarm bench`). It has:
 - a circuit breaker, request hedging, a token budget and a write-ahead journal;
 - a Batches API backend at half price.
 
-On a simulated hostile endpoint it is **9–12× cheaper per task and about 3–4× faster than a
-naive swarm, with about 4× fewer agents**:
+On a simulated hostile endpoint it is **7.5–11× cheaper per task and 2.7–4.6× faster than a
+naive swarm, with 4–4.6× fewer agents**. These are the ranges over 18 runs (3 endpoint
+profiles × 6 seeds, 500 tasks each). Against the hand-tuned v1 rules it is roughly even
+(0.87–1.17× the cost, 0.83–1.42× the speed); its gain there is reliability. Wall time is
+measured in real time, so small runs (`--n 120`) vary much more.
 
 ![Cost vs time](docs/assets/pareto.svg)
 
@@ -114,7 +119,7 @@ naive swarm, with about 4× fewer agents**:
 
 ```bash
 pip install -e '.[dev]'
-make lint test        # ruff, mypy, 61 tests (all offline: no keys, no cost)
+make lint test        # ruff, mypy, 90 tests (all offline: no keys, no cost)
 make bench chart      # engine benchmark + charts
 ```
 
