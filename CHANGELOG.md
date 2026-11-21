@@ -1,6 +1,25 @@
 # Changelog
 
 ## Unreleased
+- **Five new workflows** (`docs/workflows.md`), each parallel, each checked by something other than
+  the model, on Claude or any OpenAI-compatible provider, with a hard `--max-usd` cap:
+  - `swarm build "description" --out app`: builds a new app. A lead engineer writes a spec with
+    every file's interface; engineers write the files in parallel, in dependency waves
+    (Python must compile, JSON must parse). With `--allow-execution` the setup and tests really
+    run, and a fixer repairs failures over up to `--fix-rounds`. Model-proposed commands are
+    checked first: no shell, an allowlist of build tools, inside the project only, a private
+    HOME, and no API keys in the environment.
+  - `swarm write`: an outline, sections drafted in parallel under one style guide, then an
+    edit pass that must keep every section.
+  - `swarm analyze data.csv "question"`: analyses run as code on the data in the sandbox (errors
+    are fed back for fixes). The report may only use computed numbers; any that aren't are
+    flagged. Charts and scripts are saved.
+  - `swarm review PATH`: one reviewer per file. A finding whose quoted code isn't in the file
+    is dropped, and line numbers are corrected.
+  - `swarm doc translate|summarize|rewrite FILE`: chunked at headings, with one glossary for
+    every chunk. Summaries are merged in rounds.
+- Shared `workflows/chat.py`: one model interface with per-call pricing, a run cap, and a
+  parallel runner built on the swarm engine (back-off, retries, escalation).
 - **Task kinds for `swarm run`:**
   - `text`: classification, extraction, short answers, translation.
   - `code`: answers are checked by running the task's `tests` in a sandbox; this needs

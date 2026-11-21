@@ -18,6 +18,7 @@ import statistics
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from .backends import MockBackend
 from .orchestrator import Swarm, jsonl_event_sink
@@ -340,6 +341,130 @@ def cmd_gen(a: argparse.Namespace) -> None:
     print(f"wrote {a.n} tasks to {a.path}")
 
 
+# ----------------------------------------------------------------------------- workflows
+
+
+def _provider_args(p: argparse.ArgumentParser, max_usd: float) -> None:
+    p.add_argument("--model", default=None, help="default from swarm.toml, else claude-opus-5-5")
+    p.add_argument("--provider", choices=["anthropic", "openai"], default=None)
+    p.add_argument("--base-url", default=None, help="OpenAI-compatible endpoint (implies --provider openai)")
+    p.add_argument("--api-key-env", default=None, metavar="NAME", help="variable holding the provider key")
+    p.add_argument("--price", default=None, metavar="IN,OUT[,CACHED]", help="USD per million tokens")
+    p.add_argument("--max-usd", type=float, default=max_usd, help=f"hard dollar cap (default {max_usd})")
+    p.add_argument("--agents", type=int, default=6, help="parallel workers")
+    p.add_argument("--config", default=None)
+
+
+def _chat(a: argparse.Namespace):
+    from .workflows.chat import make_chat
+
+    return make_chat(a.model, provider=a.provider, base_url=a.base_url, api_key_env=a.api_key_env,
+                     price=a.price, max_usd=a.max_usd or None, config_path=a.config)
+
+
+def _say(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+def _run_workflow(a: argparse.Namespace, coro_fn) -> object:
+    import asyncio
+
+    chat = _chat(a)
+    _say(f"{type(chat).__name__.removesuffix('Chat').lower()} {chat.model}, cap "
+         f"{f'${chat.max_usd:.2f}' if chat.max_usd else 'none'}")
+
+    async def go():
+        try:
+            return await coro_fn(chat)
+        finally:
+            await chat.aclose()
+
+    res = asyncio.run(go())
+    if chat.stopped is not None:
+        _say(f"note: stopped early: {str(chat.stopped).splitlines()[0]}")
+    return res
+
+
+def cmd_build(a: argparse.Namespace) -> None:
+    from .workflows.build import build
+
+    res: Any = _run_workflow(a, lambda chat: build(a.description, chat, Path(a.out), allow_execution=a.allow_execution,
+                                                   max_files=a.max_files, fix_rounds=a.fix_rounds, agents=a.agents,
+                                                   force=a.force, log=_say))
+    status = {True: "tests pass", False: "tests FAIL", None: "not run"}[res.tests_passed]
+    _say(f"wrote {len(res.files_written)} files to {res.project}; {status}; fix rounds {res.fix_rounds}; "
+         f"${res.usd:.4f} over {res.calls} calls")
+    for n in res.notes:
+        if n != "setup changed" and not n.startswith("fixed:"):
+            _say(f"note: {n}")
+    if res.spec.get("start"):
+        _say(f"start it with: cd {a.out} && {res.spec['start']}")
+
+
+def cmd_write(a: argparse.Namespace) -> None:
+    from .workflows.write import write
+
+    res: Any = _run_workflow(a, lambda chat: write(a.brief, chat, words=a.words, max_sections=a.sections,
+                                                   context=[Path(c) for c in a.context or []], agents=a.agents,
+                                                   log=_say))
+    _write_out(a.out, res.markdown)
+    _say(f"{res.words} words in {res.sections} sections{', edited' if res.edited else ''}; "
+         f"${res.usd:.4f} over {res.calls} calls")
+
+
+def cmd_analyze(a: argparse.Namespace) -> None:
+    from .workflows.analyze import analyze
+
+    out = Path(a.out).parent if a.out else Path("analysis-report")
+    res: Any = _run_workflow(a, lambda chat: analyze(Path(a.data), a.question, chat, out, max_questions=a.questions,
+                                                     allow_code=a.allow_code_execution, agents=a.agents, log=_say))
+    _write_out(a.out or str(out / "report.md"), res.markdown)
+    _say(f"{len(res.findings)} analyses, {len(res.failed)} failed, {res.unverified_numbers} unverified numbers; "
+         f"${res.usd:.4f} over {res.calls} calls")
+
+
+def cmd_review(a: argparse.Namespace) -> None:
+    from .workflows.review import review, to_json
+
+    res: Any = _run_workflow(a, lambda chat: review(Path(a.path), chat, focus=a.focus or "",
+                                                    max_files=a.max_files, agents=a.agents, log=_say))
+    _write_out(a.out, res.markdown)
+    if a.out:
+        Path(a.out).with_suffix(".json").write_text(json.dumps(to_json(res), indent=1))
+    _say(f"{res.files_reviewed} files, {len(res.findings)} findings, {res.dropped_ungrounded} dropped as ungrounded; "
+         f"${res.usd:.4f} over {res.calls} calls")
+
+
+def cmd_doc(a: argparse.Namespace) -> None:
+    from .workflows.doc import read_document, summarize, transform
+
+    text = read_document(Path(a.file))
+    if a.action == "translate":
+        if not a.to:
+            raise ValueError("translate needs --to LANGUAGE")
+        res: Any = _run_workflow(a, lambda chat: transform(
+            text, chat, f"translate it into {a.to}", f"their {a.to} translation", agents=a.agents, log=_say))
+    elif a.action == "rewrite":
+        if not a.style:
+            raise ValueError('rewrite needs --style, e.g. --style "plain English for customers"')
+        res = _run_workflow(a, lambda chat: transform(
+            text, chat, f"rewrite it as: {a.style}", "how each is written in the new style", agents=a.agents,
+            log=_say))
+    else:
+        res = _run_workflow(a, lambda chat: summarize(text, chat, words=a.words, agents=a.agents, log=_say))
+    _write_out(a.out, res.text)
+    _say(f"{res.chunks} chunks, {res.failed_chunks} failed; ${res.usd:.4f} over {res.calls} calls")
+
+
+def _write_out(path: str | None, text: str) -> None:
+    if path:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_text(text)
+        _say(f"wrote {path}")
+    else:
+        print(text)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="swarm")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -450,6 +575,53 @@ def main() -> None:
     e.add_argument("--estimate", action="store_true", help="print the cost estimate and exit")
     e.add_argument("--out", default=None, help="write summary and per-question results as JSON")
     e.set_defaults(fn=cmd_eval)
+
+    b = sub.add_parser("build", help="build a new app from a description: plan, parallel files, test, fix")
+    b.add_argument("description")
+    b.add_argument("--out", required=True, help="new project folder")
+    b.add_argument("--allow-execution", action="store_true",
+                   help="install dependencies and run the tests (allowlisted tools, no shell, no API keys)")
+    b.add_argument("--max-files", type=int, default=25)
+    b.add_argument("--fix-rounds", type=int, default=3)
+    b.add_argument("--force", action="store_true", help="write into a non-empty --out folder")
+    _provider_args(b, 3.0)
+    b.set_defaults(fn=cmd_build)
+
+    w = sub.add_parser("write", help="long-form writing: outline, sections in parallel, edit pass")
+    w.add_argument("brief")
+    w.add_argument("--words", type=int, default=1500)
+    w.add_argument("--sections", type=int, default=8)
+    w.add_argument("--context", nargs="+", default=None, help="files with facts to use (notes, a research report)")
+    w.add_argument("--out", default=None)
+    _provider_args(w, 1.0)
+    w.set_defaults(fn=cmd_write)
+
+    an = sub.add_parser("analyze", help="data analysis: questions answered by code run on your CSV")
+    an.add_argument("data")
+    an.add_argument("question")
+    an.add_argument("--questions", type=int, default=5, help="analyses to run in parallel")
+    an.add_argument("--allow-code-execution", action="store_true", help="required: runs analysis code in the sandbox")
+    an.add_argument("--out", default=None, help="report path (charts go in analysis/ next to it)")
+    _provider_args(an, 1.0)
+    an.set_defaults(fn=cmd_analyze)
+
+    rv = sub.add_parser("review", help="code review: files in parallel, findings grounded in quoted code")
+    rv.add_argument("path")
+    rv.add_argument("--focus", default=None, help='e.g. "security" or "error handling"')
+    rv.add_argument("--max-files", type=int, default=80)
+    rv.add_argument("--out", default=None, help="Markdown report (a .json with the findings is written too)")
+    _provider_args(rv, 2.0)
+    rv.set_defaults(fn=cmd_review)
+
+    dc = sub.add_parser("doc", help="long documents in parallel chunks: translate, summarize, rewrite")
+    dc.add_argument("action", choices=["translate", "summarize", "rewrite"])
+    dc.add_argument("file")
+    dc.add_argument("--to", default=None, help="target language (translate)")
+    dc.add_argument("--style", default=None, help="target style (rewrite)")
+    dc.add_argument("--words", type=int, default=400, help="summary length (summarize)")
+    dc.add_argument("--out", default=None)
+    _provider_args(dc, 2.0)
+    dc.set_defaults(fn=cmd_doc)
 
     g = sub.add_parser("gen", help="write a sample workload")
     g.add_argument("path")

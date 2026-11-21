@@ -48,7 +48,7 @@ docs = ["mkdocs-material>=9.5"]
 swarm = "swarm.__main__:main"
 
 [tool.setuptools]
-packages = ["swarm", "swarm.search"]
+packages = ["swarm", "swarm.search", "swarm.workflows"]
 
 [tool.setuptools.package-data]
 swarm = ["web/*.html"]

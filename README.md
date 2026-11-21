@@ -1,16 +1,35 @@
 # Multi-Agent Swarm
 
-**Ask a question; get a cited research report you can check.**
+**A team of AI agents for the jobs people actually do: research, building apps, writing,
+data analysis, code review, translation, and thousands of small tasks. Every result is checked by
+something other than the model's opinion.**
 
-Parallel Claude workers each research one part of your question. They search the web for
-**free** through [TinyFish](https://tinyfish.ai) and read the sources themselves. Code then
-checks every quote a worker cites against the page it actually read, and throws away quotes
-that don't match. Once the report is written, each cited sentence is checked again against
-those quotes, and anything unsupported is marked.
+| | Command | Checked by |
+|---|---|---|
+| Research a question, with citations | `swarm research "question"` | quotes matched against the pages read; each cited claim checked against its quotes |
+| Build an app (frontend, backend, CLI) | `swarm build "description" --out app --allow-execution` | its own tests, installed and run; failures go to a fixer |
+| Write a long document | `swarm write "brief" --words 3000` | outline, section lengths, an edit pass that must keep every section |
+| Analyze a CSV | `swarm analyze data.csv "question" --allow-code-execution` | every number must come from code that ran on your data |
+| Review a codebase | `swarm review ./repo` | each finding must quote code that is really in the file |
+| Translate, summarize or rewrite long documents | `swarm doc translate file.md --to German` | one glossary for every chunk; length checks |
+| Thousands of small text, code or web tasks | `swarm run tasks.jsonl` | exact answers, regexes, tests, or grounded sources |
+
+Work is split into parts that run in parallel. The parts share one plan so they fit together,
+and agents never chat with each other. It runs on Claude or on any OpenAI-compatible model
+(DeepSeek, Together, OpenRouter, vLLM ...), always with a hard dollar cap. Web search is
+**free** through [TinyFish](https://tinyfish.ai). Guides: [deep research](docs/getting-started.md),
+[build, write, analyze, review](docs/workflows.md), [batch tasks](docs/tasks.md).
+
+## Deep research
+
+Parallel workers each research one part of your question. They search the web and read the
+sources themselves. Code then checks every quote a worker cites against the page it actually
+read, and throws away quotes that don't match. Once the report is written, each cited
+sentence is checked again against those quotes, and anything unsupported is marked.
 
 [![CI](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
-![Tests](https://img.shields.io/badge/tests-96%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-108%20passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-informational)](https://chetan0246.github.io/multi-agent-swarm/)
 
@@ -122,7 +141,7 @@ measured in real time, so small runs (`--n 120`) vary much more.
 
 ```bash
 pip install -e '.[dev]'
-make lint test        # ruff, mypy, 96 tests (all offline: no keys, no cost)
+make lint test        # ruff, mypy, 108 tests (all offline: no keys, no cost)
 make bench chart      # engine benchmark + charts
 ```
 
