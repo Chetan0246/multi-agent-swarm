@@ -232,7 +232,7 @@ def test_server_follow_up_inherits_options_and_validates_kind(tmp_path, monkeypa
     from swarm.server import create_app
 
     monkeypatch.delenv("SWARM_API_TOKEN", raising=False)
-    app = create_app(state_dir=tmp_path)
+    app = create_app(state_dir=tmp_path, allowed_hosts=["testserver"])
     with TestClient(app) as c:
         bad = c.post("/api/research", json={"question": "Q?", "kind": "videos", "mock": True})
         assert bad.status_code == 422
@@ -255,3 +255,24 @@ def test_eval_counts_spend_of_a_failed_run():
 
     rs = asyncio.run(run_eval([EvalItem("1", "Q?", ["x"])], FailsAtSynthesis(), None, config_from("quick")))
     assert rs[0].error and rs[0].usd > 0  # plan + workers were billed before the failure
+
+
+def test_server_rejects_foreign_host_headers(tmp_path, monkeypatch):
+    """DNS rebinding: a page on evil.test resolved to 127.0.0.1 sends Host: evil.test."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+
+    from swarm.server import allowed_hosts_for, create_app
+
+    monkeypatch.delenv("SWARM_API_TOKEN", raising=False)
+    monkeypatch.delenv("SWARM_ALLOWED_HOSTS", raising=False)
+    app = create_app(state_dir=tmp_path)  # default: localhost names only
+    with TestClient(app, base_url="http://127.0.0.1:8000") as c:
+        assert c.get("/healthz").status_code == 200
+        assert c.get("/healthz", headers={"host": "localhost:8000"}).status_code == 200
+        assert c.get("/healthz", headers={"host": "evil.test"}).status_code == 400
+        r = c.post("/api/research", headers={"host": "evil.test:8000"}, json={"question": "Q?", "mock": True})
+        assert r.status_code == 400
+    monkeypatch.setenv("SWARM_ALLOWED_HOSTS", "swarm.lan")
+    assert "swarm.lan" in allowed_hosts_for({}) and "evil.test" not in allowed_hosts_for({}, "0.0.0.0")

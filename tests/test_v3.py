@@ -110,7 +110,8 @@ def test_local_docs_search_and_read(tmp_path):
     (tmp_path / "b.txt").write_text("Gas boilers have an efficiency near 90 percent.")
     docs = LocalDocs([tmp_path])
     hits = asyncio.run(docs.search("heat pumps cold climate"))
-    assert hits and hits[0].url.startswith("file://") and "a.md" in hits[0].url
+    assert hits and hits[0].url.startswith("doc://") and "a.md" in hits[0].url
+    assert str(tmp_path) not in hits[0].url  # no local directory layout sent to the provider
     page = asyncio.run(docs.fetch([hits[0].url]))[0]
     assert "minus 20 degrees" in page.text
     assert docs.stats["documents"] == 2
@@ -244,7 +245,7 @@ def test_server_end_to_end_with_mock(tmp_path, monkeypatch):
     from swarm.server import create_app
 
     monkeypatch.setenv("SWARM_API_TOKEN", "secret")
-    app = create_app(state_dir=tmp_path)
+    app = create_app(state_dir=tmp_path, allowed_hosts=["testserver"])
     auth = {"Authorization": "Bearer secret"}
     with TestClient(app) as c:
         assert c.get("/healthz").json()["ok"]

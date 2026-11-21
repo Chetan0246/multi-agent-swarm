@@ -38,7 +38,7 @@ _INLINE = [
     (re.compile(r"\*\*([^*]+)\*\*"), r"<strong>\1</strong>"),
     (re.compile(r"(?<![*\w])\*([^*\n]+)\*(?!\w)"), r"<em>\1</em>"),
 ]
-_LINK = re.compile(r"\[([^\]]+)\]\(((?:https?|file)://[^)\s]+)\)")
+_LINK = re.compile(r"\[([^\]]+)\]\(((?:https?|file|doc)://[^)\s]+)\)")
 _REF = re.compile(r"\[(\d{1,3})\]")
 
 

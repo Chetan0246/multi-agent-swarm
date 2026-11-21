@@ -25,6 +25,16 @@ SYSTEM_PROMPT = (
     "Be calibrated: use low values when unsure. Return one entry per task id."
 )
 
+CODE_SYSTEM_PROMPT = (
+    "You are a worker in a task-processing swarm. You receive a JSON list of coding tasks, "
+    "each with an `id` and a `prompt`. Solve every task independently. For each task the "
+    "`answer` is only the complete, runnable source code (Python unless the task names another "
+    "language): no markdown fences, no explanation, no example usage, no tests unless asked. "
+    "Keep the exact function and class names the task asks for. Use only the standard library "
+    "unless the task says otherwise. Also give `confidence`: your probability (0 to 1) that "
+    "the code is correct. Return one entry per task id."
+)
+
 RESULT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -134,14 +144,14 @@ def build_user_message(tasks: list[Task]) -> str:
                       separators=(",", ":"), ensure_ascii=False)
 
 
-def build_system(shared_context: str | None) -> list[dict]:
+def build_system(shared_context: str | None, system: str = SYSTEM_PROMPT) -> list[dict]:
     """Stable prefix first, cache breakpoint on the last stable block.
 
     A short system prompt alone is below the model's minimum cacheable prefix and
     silently won't cache; `shared_context` (a document, schema, rubric or few-shot
     examples common to every task) is what makes caching pay off at scale.
     """
-    blocks: list[dict[str, Any]] = [{"type": "text", "text": SYSTEM_PROMPT}]
+    blocks: list[dict[str, Any]] = [{"type": "text", "text": system}]
     if shared_context:
         blocks.append({"type": "text", "text": "Shared context for all tasks:\n" + shared_context})
     blocks[-1]["cache_control"] = {"type": "ephemeral"}
@@ -149,11 +159,11 @@ def build_system(shared_context: str | None) -> list[dict]:
 
 
 def build_params(tasks: list[Task], effort: str, model: str, shared_context: str | None,
-                 max_tokens_per_task: int) -> dict:
+                 max_tokens_per_task: int, system: str = SYSTEM_PROMPT) -> dict:
     return dict(
         model=model,
         max_tokens=min(16000, 1024 + max_tokens_per_task * len(tasks)),
-        system=build_system(shared_context),
+        system=build_system(shared_context, system),
         messages=[{"role": "user", "content": build_user_message(tasks)}],
         output_config={"effort": effort, "format": {"type": "json_schema", "schema": RESULT_SCHEMA}},
     )
@@ -187,7 +197,7 @@ class AnthropicBackend:
     bulk = False
 
     def __init__(self, shared_context: str | None = None, max_tokens_per_task: int = 400,
-                 use_fallbacks: bool = True, timeout: float = 120.0):
+                 use_fallbacks: bool = True, timeout: float = 120.0, system: str = SYSTEM_PROMPT):
         import anthropic
 
         self._a = anthropic
@@ -195,10 +205,14 @@ class AnthropicBackend:
         self.shared_context = shared_context
         self.max_tokens_per_task = max_tokens_per_task
         self.use_fallbacks = use_fallbacks
+        self.system = system
+
+    async def aclose(self) -> None:
+        await self.client.close()
 
     async def run_batch(self, tasks: list[Task], effort: str, model: str) -> BatchResponse:
         a = self._a
-        kw = build_params(tasks, effort, model, self.shared_context, self.max_tokens_per_task)
+        kw = build_params(tasks, effort, model, self.shared_context, self.max_tokens_per_task, self.system)
         try:
             if self.use_fallbacks:
                 msg = await self.client.beta.messages.create(
@@ -228,11 +242,13 @@ class AnthropicBatchBackend:
     bulk = True
 
     def __init__(self, shared_context: str | None = None, max_tokens_per_task: int = 400,
-                 window_s: float = 5.0, max_requests: int = 5000, poll_s: float = 30.0):
+                 window_s: float = 5.0, max_requests: int = 5000, poll_s: float = 30.0,
+                 system: str = SYSTEM_PROMPT):
         import anthropic
 
         self._a = anthropic
         self.client = anthropic.AsyncAnthropic()
+        self.system = system
         self.shared_context = shared_context
         self.max_tokens_per_task = max_tokens_per_task
         self.window_s = window_s
@@ -246,7 +262,7 @@ class AnthropicBatchBackend:
     async def run_batch(self, tasks: list[Task], effort: str, model: str) -> BatchResponse:
         fut = asyncio.get_running_loop().create_future()
         self._seq += 1
-        params = build_params(tasks, effort, model, self.shared_context, self.max_tokens_per_task)
+        params = build_params(tasks, effort, model, self.shared_context, self.max_tokens_per_task, self.system)
         self._pending.append((f"r{self._seq}", params, fut))
         if len(self._pending) >= self.max_requests:
             self._flush()

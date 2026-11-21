@@ -35,4 +35,4 @@
 | `swarm doctor [--online]` | check install, keys and config |
 | `swarm eval [questions.jsonl]` | known-answer evaluation against a single-agent baseline (`--estimate`, `--mock`, `--max-usd-total`) |
 | `swarm bench` | offline benchmark of the scheduling engine |
-| `swarm run tasks.jsonl` | the general batch engine, for classification or extraction workloads |
+| `swarm run tasks.jsonl` | many small tasks: text, code checked by tests, or web lookups with cited sources (`--allow-code-execution`, `--max-usd`, provider flags as above); see [Batch tasks](tasks.md) |

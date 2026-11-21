@@ -47,7 +47,7 @@ class Citation:
 
     @property
     def domain(self) -> str:
-        if self.url.startswith("file://"):  # each local document counts as its own source
+        if self.url.startswith(("doc://", "file://")):  # each local document is its own source
             return self.url.split("#", 1)[0].rsplit("/", 1)[-1]
         host = urlparse(self.url).netloc.lower()
         return host[4:] if host.startswith("www.") else host
@@ -179,11 +179,11 @@ def _tool_defs(web: bool, docs: bool) -> list[dict]:
     if docs:
         tools += [
             {"name": "search_documents", "description": "Search the user's own documents. Returns "
-             "passages with file:// URLs.",
+             "passages with doc:// URLs.",
              "input_schema": {"type": "object", "properties": {"query": {"type": "string"}},
                               "required": ["query"]}},
             {"name": "read_document", "description": "Read up to 3 document passages by their "
-             "file:// URL.",
+             "doc:// URL.",
              "input_schema": {"type": "object", "properties": {
                  "urls": {"type": "array", "items": {"type": "string"}, "maxItems": 3}},
                  "required": ["urls"]}},

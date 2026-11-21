@@ -1,0 +1,3 @@
+{"id": "py-release", "kind": "web", "prompt": "In what year was Python 3.0 first released? Answer with the year and cite the source.", "expected": "2008"}
+{"id": "cop-5f", "kind": "web", "prompt": "What coefficient of performance do cold-climate air-source heat pumps reach at 5 degrees Fahrenheit, according to US DOE or NREL sources?", "min_sources": 2}
+{"id": "tinyfish-limit", "kind": "web", "prompt": "How many free searches per day does the TinyFish Search API allow?", "pattern": "\\d"}

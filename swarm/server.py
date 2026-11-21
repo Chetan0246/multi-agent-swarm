@@ -85,9 +85,31 @@ class JobStore:
         (self.dir / f"{job.id}.json").write_text(json.dumps(d))
 
 
-def create_app(config_path: str | None = None, state_dir: Path | None = None):
+LOCAL_HOSTS = ["127.0.0.1", "localhost", "::1", "[::1]"]
+
+
+def allowed_hosts_for(srv: dict[str, Any], bind_host: str | None = None) -> list[str]:
+    """Host names the server answers to. Anything else is rejected with 400.
+
+    This blocks DNS rebinding: a web page you visit can point its own domain at 127.0.0.1 and
+    then call this API from your browser (spending your credits). Such requests carry the
+    attacker's domain in the Host header, so they never match. Add the names you really use
+    when serving on a network: SWARM_ALLOWED_HOSTS=swarm.example.lan,10.0.0.5 or
+    `allowed_hosts = [...]` under [server].
+    """
+    hosts = list(LOCAL_HOSTS)
+    env = os.environ.get("SWARM_ALLOWED_HOSTS")
+    extra = [h.strip() for h in env.split(",")] if env else list(srv.get("allowed_hosts", []))
+    if bind_host and bind_host not in ("0.0.0.0", "::"):
+        extra.append(bind_host)
+    return hosts + [h for h in extra if h and h not in hosts]
+
+
+def create_app(config_path: str | None = None, state_dir: Path | None = None,
+               allowed_hosts: list[str] | None = None):
     try:
         from fastapi import Depends, FastAPI, HTTPException, Request
+        from fastapi.middleware.trustedhost import TrustedHostMiddleware
         from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
         from pydantic import BaseModel, Field
     except ModuleNotFoundError as e:  # pragma: no cover
@@ -124,6 +146,7 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None):
         max_usd: float | None = Field(default=None, gt=0)
 
     app = FastAPI(title="multi-agent-swarm", version=__version__, docs_url="/api/docs")
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or allowed_hosts_for(srv))
 
     def options(body: ResearchIn, question: str | None = None) -> ResearchOptions:
         if body.preset not in ("quick", "standard", "deep"):
@@ -277,4 +300,9 @@ def serve(host: str = "127.0.0.1", port: int = 8000, config_path: str | None = N
     if host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("SWARM_API_TOKEN"):
         print("warning: serving on a public interface without SWARM_API_TOKEN; anyone who can reach "
               "this port can spend your API credits")
-    uvicorn.run(create_app(config_path), host=host, port=port)
+    srv = load_config(config_path)[0].get("server", {})
+    hosts = allowed_hosts_for(srv, host)
+    if host in ("0.0.0.0", "::") and hosts == LOCAL_HOSTS:
+        print("note: only localhost names are accepted; set SWARM_ALLOWED_HOSTS to the names or IPs "
+              "you reach this server by")
+    uvicorn.run(create_app(config_path, allowed_hosts=hosts), host=host, port=port)

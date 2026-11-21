@@ -65,7 +65,7 @@ class OpenAICompatLLM(ClientToolsLLM):
                  worker_model: str | None = None, language: str | None = None, timeout: float = 300.0,
                  max_tokens: int = 8000, json_mode: bool = True, reasoning_effort: bool = False,
                  cached_price_known: bool = False, http: httpx2.AsyncClient | None = None,
-                 api_key_env: str = "OPENAI_API_KEY"):
+                 api_key_env: str = "OPENAI_API_KEY", require_search: bool = True):
         url = base_url or os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE")
         if not url:
             raise ConfigError("no base URL for the OpenAI-compatible provider",
@@ -77,7 +77,7 @@ class OpenAICompatLLM(ClientToolsLLM):
                              f"export {api_key_env}=<your provider's key> (it is sent only to the base URL), "
                              "or name the variable that holds it with --api-key-env")
         self.api_key_env = api_key_env
-        if search is None and docs is None:
+        if require_search and search is None and docs is None:
             raise ConfigError("the OpenAI-compatible provider needs client-side search",
                               "use --search tinyfish (free) and/or --docs; Claude's server-side "
                               "search is Anthropic-only")
@@ -253,3 +253,47 @@ class OpenAICompatLLM(ClientToolsLLM):
         out = {str(r["id"]): str(r["verdict"]).lower() for r in rows if isinstance(r, dict)
                and "id" in r and "verdict" in r} if isinstance(rows, list) else {}
         return out, self._usage(data)
+
+
+class OpenAICompatBackend:
+    """Engine backend (`swarm run`) on an OpenAI-compatible provider: one call answers a whole
+    batch of tasks as JSON, like AnthropicBackend. `system` picks the task kind's prompt."""
+
+    bulk = False
+
+    def __init__(self, client: OpenAICompatLLM, system: str | None = None,
+                 shared_context: str | None = None, max_tokens_per_task: int = 400):
+        from .backends import RESULT_SCHEMA, SYSTEM_PROMPT
+
+        prompt = system or SYSTEM_PROMPT
+        if shared_context:
+            prompt += "\n\nShared context for all tasks:\n" + shared_context
+        self.client = client
+        self.system = prompt + _json_rule(RESULT_SCHEMA)
+        self.max_tokens_per_task = max_tokens_per_task
+
+    async def aclose(self) -> None:
+        await self.client.aclose()
+
+    async def run_batch(self, tasks, effort: str, model: str):
+        from .backends import BatchResponse, build_user_message
+
+        data = await self.client._chat(
+            model, [{"role": "system", "content": self.system},
+                    {"role": "user", "content": build_user_message(tasks)}],
+            effort, json_out=True, max_tokens=min(16000, 1024 + self.max_tokens_per_task * len(tasks)))
+        usage = self.client._usage(data)
+        msg, finish = self.client._message(data)
+        if finish == "length":
+            return BatchResponse({}, usage, truncated=True)  # the policy learns this batch is too big
+        rows = _parse_json_obj(msg.get("content") or "").get("results", [])
+        answers: dict[str, str] = {}
+        conf: dict[str, float] = {}
+        for r in rows if isinstance(rows, list) else []:
+            if isinstance(r, dict) and "id" in r and "answer" in r:
+                answers[str(r["id"])] = str(r["answer"])
+                try:
+                    conf[str(r["id"])] = float(r.get("confidence", 0.5))
+                except (TypeError, ValueError):
+                    conf[str(r["id"])] = 0.5
+        return BatchResponse(answers, usage, conf)

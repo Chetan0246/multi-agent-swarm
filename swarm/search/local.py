@@ -1,8 +1,9 @@
 """Your own documents as a source: .txt, .md, .html and (with `pip install pypdf`) .pdf.
 
 Documents are split into passages and searched with BM25 (no external service, no cost).
-Passages are addressed as `file://<path>#p<n>`, so they are cited and quote-checked exactly
-like web pages.
+Passages are addressed as `doc://<path relative to the folder you gave>#p<n>`, so they are
+cited and quote-checked exactly like web pages. The full local path is never used: it would
+reveal your directory layout (and often your user name) to the model provider.
 """
 from __future__ import annotations
 
@@ -40,15 +41,21 @@ class LocalDocs:
 
     def __init__(self, paths: Sequence[str | Path], passage_chars: int = 1500):
         self.passages: list[tuple[str, str, str]] = []  # (url, title, text)
-        files: list[Path] = []
+        files: list[tuple[Path, str]] = []  # (file, label shown to the model)
         for p in map(Path, paths):
             if p.is_dir():
-                files += sorted(f for f in p.rglob("*") if f.suffix.lower() in SUPPORTED)
+                files += [(f, f"{p.name}/{f.relative_to(p).as_posix()}") for f in sorted(p.rglob("*"))
+                          if f.suffix.lower() in SUPPORTED]
             elif p.is_file():
-                files.append(p)
+                files.append((p, p.name))
             else:
                 raise ConfigError(f"document not found: {p}")
-        for f in files:
+        seen: dict[str, int] = {}
+        for f, label in files:
+            seen[label] = seen.get(label, 0) + 1  # same name from two folders: keep them apart
+            if seen[label] > 1:
+                label = f"{label}~{seen[label]}"
+            label = label.replace(" ", "%20")
             text = _read(f)
             paras = [x.strip() for x in re.split(r"\n\s*\n", text) if x.strip()]
             buf, n = "", 0
@@ -58,7 +65,7 @@ class LocalDocs:
                     continue
                 if buf:
                     n += 1
-                    self.passages.append((f"file://{f.resolve()}#p{n}", f"{f.name} (part {n})", buf))
+                    self.passages.append((f"doc://{label}#p{n}", f"{f.name} (part {n})", buf))
                 buf = para
         self._tf = [Counter(_TOK.findall(t.lower())) for _, _, t in self.passages]
         df: Counter[str] = Counter()

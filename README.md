@@ -10,7 +10,7 @@ those quotes, and anything unsupported is marked.
 
 [![CI](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/Chetan0246/multi-agent-swarm/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
-![Tests](https://img.shields.io/badge/tests-90%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-96%20passing-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 [![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-informational)](https://chetan0246.github.io/multi-agent-swarm/)
 
@@ -37,6 +37,8 @@ Try it with no keys and no cost first: `swarm research "any question" --mock --o
 | **Exports** | Markdown, JSON, and self-contained HTML with hover-over source quotes |
 | **Web UI and REST API** | `swarm serve`: live progress, history, downloads, follow-ups; Docker image |
 | **Local cache** | repeated searches and pages cost nothing and use no quota |
+| **Batch tasks** | `swarm run tasks.jsonl`: thousands of small text, code or web-lookup tasks, each checked (exact answer, regex, tests run in a sandbox, or grounded sources), retried at higher effort and capped in dollars ([docs/tasks.md](docs/tasks.md)) |
+| **Any model provider** | Claude, or any OpenAI-compatible API such as DeepSeek, Together, OpenRouter or vLLM (`--base-url`, `--model`, `--price`) |
 
 ## How it works
 
@@ -77,6 +79,7 @@ swarm research "question" --docs ./contracts --docs-only       # your files only
 swarm research "and costs?" --follow-up r.json --out r2.html   # build on an earlier report
 swarm research "question" --base-url https://host/v1 --model MODEL --price 0.10,0.40
                                                                # any OpenAI-compatible provider
+swarm run examples/tasks/mixed.jsonl --allow-code-execution    # batch: text, code (tested), web (cited)
 swarm serve                                                    # web UI on http://127.0.0.1:8000
 swarm doctor --online                                          # check keys and setup
 swarm eval --estimate                                          # known-answer evaluation vs a single agent
@@ -119,7 +122,7 @@ measured in real time, so small runs (`--n 120`) vary much more.
 
 ```bash
 pip install -e '.[dev]'
-make lint test        # ruff, mypy, 90 tests (all offline: no keys, no cost)
+make lint test        # ruff, mypy, 96 tests (all offline: no keys, no cost)
 make bench chart      # engine benchmark + charts
 ```
 

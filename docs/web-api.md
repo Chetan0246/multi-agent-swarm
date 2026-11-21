@@ -14,6 +14,12 @@ follow-up question.
     `SWARM_API_TOKEN`; otherwise anyone who can reach the port can spend your credits. Every
     job is capped at `max_usd_per_job` (default $2), whatever the request asks for.
 
+    The server only answers requests addressed to `localhost`, `127.0.0.1` or `::1` (and to
+    the `--host` you bind). This blocks DNS rebinding, where a web page you visit points its
+    own domain at 127.0.0.1 to call the API from your browser. If you reach the server by
+    another name or IP, list it: `SWARM_ALLOWED_HOSTS=swarm.lan,10.0.0.5` or
+    `allowed_hosts = [...]` under `[server]`. Other names get `400 Invalid host header`.
+
 ## Docker
 
 ```bash

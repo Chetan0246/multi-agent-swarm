@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+- **Task kinds for `swarm run`:**
+  - `text`: classification, extraction, short answers, translation.
+  - `code`: answers are checked by running the task's `tests` in a sandbox; this needs
+    `--allow-code-execution`. The sandbox gives each run an empty environment (no API keys),
+    a temporary directory, CPU, memory and file limits, and a timeout.
+  - `web`: lookups with free TinyFish search and verbatim quotes checked against the pages.
+  - A file can mix kinds; each runs through its own engine at the same time as the others.
+    Examples are in `examples/tasks/`, and the guide is `docs/tasks.md`.
+- `swarm run` works with any OpenAI-compatible provider (`--model`, `--base-url`,
+  `--api-key-env`, `--price`, or `[run]` / `[research]` in swarm.toml) and has a hard dollar
+  cap (`--max-usd`).
+- **Security:**
+  - The web server rejects requests whose Host header isn't one of its own names, which
+    blocks DNS-rebinding attacks from web pages you visit. Add other names with
+    `SWARM_ALLOWED_HOSTS`.
+  - Your documents are labelled `doc://<folder>/<file>#p<n>`, never by their full local path,
+    so your directory layout isn't sent to the model provider.
+  - CI audits all dependencies for known vulnerabilities (`pip-audit`).
+
 ## 3.1.0 — any OpenAI-compatible model provider
 - **Any OpenAI-compatible model provider** (DeepSeek, Together, DeepInfra, OpenRouter, vLLM,
   Ollama ...): `--provider openai --base-url URL --model ID --price IN,OUT`, or the same in

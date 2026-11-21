@@ -1,0 +1,6 @@
+{"id": "sent1", "prompt": "Classify the sentiment of: 'The update fixed every crash I had.' Answer positive, negative or neutral.", "expected": "positive"}
+{"id": "sent2", "prompt": "Classify the sentiment of: 'Support never replied to my ticket.' Answer positive, negative or neutral.", "expected": "negative"}
+{"id": "route1", "prompt": "Route this ticket to billing, technical or account: 'I was charged twice this month.' Answer with the team only.", "expected": "billing"}
+{"id": "extract1", "prompt": "Extract the invoice total as a number with two decimals from: 'Subtotal 90.00, tax 8.10, total due 98.10 EUR'.", "expected": "98.10"}
+{"id": "date1", "prompt": "Convert '3rd of March 2026' to ISO 8601 (YYYY-MM-DD). Answer with the date only.", "pattern": "^2026-03-03$"}
+{"id": "translate1", "prompt": "Translate to French: 'The meeting is moved to Friday.' Answer with the translation only.", "pattern": "(?i)vendredi"}

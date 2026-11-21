@@ -23,6 +23,18 @@ jobs:
       - run: mypy swarm
       - run: pytest -q --cov --cov-report=term-missing:skip-covered
 
+  audit:
+    # Known vulnerabilities in the runtime dependencies (all extras), from the PyPA advisory DB.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip pip-audit
+      - run: pip install '.[all]'
+      - run: pip-audit --desc on
+
   bench-smoke:
     # The simulator benchmark is the regression guard for the scheduler's trade-offs.
     runs-on: ubuntu-latest

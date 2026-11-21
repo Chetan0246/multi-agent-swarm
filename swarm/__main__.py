@@ -19,7 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from .backends import AnthropicBackend, AnthropicBatchBackend, Backend, MockBackend
+from .backends import MockBackend
 from .orchestrator import Swarm, jsonl_event_sink
 from .planner import PlanConfig, Rung
 from .task import Task
@@ -112,34 +112,60 @@ def cmd_bench(a: argparse.Namespace) -> None:
 
 
 def cmd_run(a: argparse.Namespace) -> None:
-    with open(a.path) as f:
-        tasks = [Task.from_dict(json.loads(line)) for line in f if line.strip()]
+    """Many independent tasks (text, code or web lookups), batched, checked and escalated."""
+    import asyncio
+
+    from .app import register_prices
+    from .config import env_overrides, load_config
+    from .pricing import PRICES, price_of, usd_to_billed_tokens
+    from .tasks import build_backends, ladder, load_tasks, run_kinds
+
+    file_cfg, _ = load_config(a.config)
+    # [run] settings, falling back to [research] (provider, model, base_url, api_key_env, price)
+    conf = {**file_cfg.get("research", {}), **file_cfg.get("run", {}), **env_overrides()}
+    pick = lambda k, d=None: v if (v := getattr(a, k, None)) is not None else conf.get(k, d)  # noqa: E731
+    model = str(pick("model", "claude-opus-5-5"))
+    provider = str(pick("provider") or ("openai" if pick("base_url") or not model.startswith("claude")
+                                        else "anthropic"))
+    register_prices(file_cfg, [model], pick("price"))
+    if not a.mock:
+        price_of(model)  # unknown model: fail before any spend
+    tasks = load_tasks(a.path, allow_code=a.allow_code_execution, code_timeout=a.code_timeout)
+    kinds = {t.meta["kind"] for t in tasks}
+    budget = a.budget
+    if a.max_usd:
+        budget = min(budget or float("inf"), usd_to_billed_tokens(model, a.max_usd))
     shared = Path(a.shared_context).read_text() if a.shared_context else None
-    backend: Backend
-    if a.mock:
-        backend = _mock(1)
-    elif a.batch_api:
-        backend = AnthropicBatchBackend(shared_context=shared)
-    else:
-        backend = AnthropicBackend(shared_context=shared, use_fallbacks=not a.no_fallbacks)
-    cfg = PlanConfig(
-        ladder=tuple(Rung(a.model, e) for e in a.efforts.split(",")),
-        max_batch=a.max_batch, max_agents=a.max_agents, adaptive=not a.static,
-        hedging=not a.no_hedge, min_confidence=a.min_confidence, token_budget=a.budget,
-    )
+    import os
+
+    base_url = pick("base_url") or os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENAI_API_BASE")
+    backends = build_backends(
+        kinds, provider, model, base_url=base_url, api_key_env=str(pick("api_key_env") or "OPENAI_API_KEY"),
+        shared_context=shared, batch_api=a.batch_api, mock=a.mock, search=a.search,
+        use_fallbacks=not a.no_fallbacks, cached_price_known=PRICES.get(model) is not None
+        and PRICES[model].cache_read_mult < 1.0)
+    cfg = PlanConfig(ladder=ladder(model, a.efforts), max_batch=a.max_batch, max_agents=a.max_agents,
+                     adaptive=not a.static, hedging=not a.no_hedge, min_confidence=a.min_confidence,
+                     token_budget=budget)
     state = Path(a.state_dir)
     state.mkdir(parents=True, exist_ok=True)
-    swarm = Swarm(backend, cfg, agents=a.agents,
-                  journal_path=str(state / "journal.jsonl"),
-                  policy_path=str(state / "policy.json"),
-                  on_event=jsonl_event_sink(str(state / "events.jsonl")) if a.events else None)
-    report = swarm.run(tasks)
+    counts = ", ".join(f"{sum(t.meta['kind'] == k for t in tasks)} {k}" for k in sorted(kinds))
+    print(f"{'mock' if a.mock else provider} {model}: {len(tasks)} tasks ({counts})"
+          f"{f', cap ${a.max_usd:.2f}' if a.max_usd else ''}", file=sys.stderr)
+    runs = asyncio.run(run_kinds(tasks, backends, cfg, state_dir=state, agents=a.agents,
+                                 on_event=jsonl_event_sink(str(state / "events.jsonl")) if a.events else None))
+    results = {tid: r for run in runs for tid, r in run.report.results.items()}
     out = open(a.out, "w") if a.out else sys.stdout
     for t in tasks:
-        out.write(report.results[t.id].to_json() + "\n")
+        out.write(json.dumps({**results[t.id].to_dict(), "kind": t.meta["kind"]}, ensure_ascii=False) + "\n")
     if a.out:
         out.close()
-    print(json.dumps(report.summary(), indent=2), file=sys.stderr)
+    summary = {r.kind: {**r.report.summary(), **r.extra} for r in runs}
+    if not a.mock:
+        price = price_of(model)  # billed-equivalent tokens are in input-token units
+        for r in runs:
+            summary[r.kind]["usd_approx"] = round(r.report.billed_equiv_tokens * price.input / 1e6, 4)
+    print(json.dumps(summary, indent=2), file=sys.stderr)
 
 
 def cmd_research(a: argparse.Namespace) -> None:
@@ -327,11 +353,21 @@ def main() -> None:
     b.add_argument("--out", default=None, help="write means, stdevs and raw runs as JSON")
     b.set_defaults(fn=cmd_bench)
 
-    r = sub.add_parser("run", help="process a JSONL workload")
+    r = sub.add_parser("run", help="process many tasks from JSONL: text, code (tested) or web lookups (cited)")
     r.add_argument("path")
-    r.add_argument("--mock", action="store_true", help="offline simulator instead of Claude")
-    r.add_argument("--batch-api", action="store_true", help="Message Batches API: 50%% price, slow")
-    r.add_argument("--model", default="claude-opus-5-5")
+    r.add_argument("--mock", action="store_true", help="offline simulator instead of a model")
+    r.add_argument("--batch-api", action="store_true", help="Message Batches API: 50%% price, slow (Claude)")
+    r.add_argument("--model", default=None, help="default claude-opus-5-5; a non-Claude id selects --provider openai")
+    r.add_argument("--provider", choices=["anthropic", "openai"], default=None)
+    r.add_argument("--base-url", default=None, help="OpenAI-compatible endpoint (implies --provider openai)")
+    r.add_argument("--api-key-env", default=None, metavar="NAME", help="variable holding the provider key")
+    r.add_argument("--price", default=None, metavar="IN,OUT[,CACHED]", help="USD per million tokens")
+    r.add_argument("--max-usd", type=float, default=None, help="hard dollar cap for the run")
+    r.add_argument("--allow-code-execution", action="store_true",
+                   help="run model-written code against code tasks' tests (sandboxed subprocess)")
+    r.add_argument("--code-timeout", type=float, default=10.0, help="seconds per test run")
+    r.add_argument("--search", choices=["tinyfish", "mock"], default="tinyfish", help="search for web tasks")
+    r.add_argument("--config", default=None)
     r.add_argument("--efforts", default="low,medium,high", help="escalation ladder")
     r.add_argument("--max-batch", type=int, default=24)
     r.add_argument("--max-agents", type=int, default=8)

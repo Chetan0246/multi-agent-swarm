@@ -18,6 +18,7 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Command line: cli.md
+  - "Batch tasks: text, code, web": tasks.md
   - Web UI and API: web-api.md
   - Configuration: configuration.md
   - How it works: ARCHITECTURE.md
