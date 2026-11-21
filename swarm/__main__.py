@@ -146,7 +146,7 @@ def cmd_research(a: argparse.Namespace) -> None:
     import asyncio
 
     from .app import ResearchOptions, resolve, run_research
-    from .export import load_report, write_report
+    from .export import cost_label, load_report, write_report
     from .pricing import estimate_research
 
     opts = ResearchOptions(
@@ -186,7 +186,7 @@ def cmd_research(a: argparse.Namespace) -> None:
     if a.verbose:
         print(json.dumps(report.stats, indent=2), file=sys.stderr)
     s = report.stats
-    print(f"cost ${s['usd']:.2f} (estimate {s['usd_estimate']}), {s['wall_time_s']}s, "
+    print(f"cost {cost_label(s)} (estimate {s['usd_estimate']}), {s['wall_time_s']}s, "
           f"{s['verified_%']}% findings verified, claim support {s.get('claim_support_%', 'n/a')}%",
           file=sys.stderr)
 

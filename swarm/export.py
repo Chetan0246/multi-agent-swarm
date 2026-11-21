@@ -117,6 +117,12 @@ li{margin:.25rem 0}code{background:var(--card);padding:0 .3em;border-radius:4px}
 """
 
 
+def cost_label(stats: dict) -> str:
+    """'$0.45', or '$0.45 simulated (mock run, no real spend)' for offline demo runs."""
+    usd = f"${stats['usd']:.2f}"
+    return f"{usd} simulated (mock run, no real spend)" if stats.get("run_search") == "mock" else usd
+
+
 def to_html(report: ResearchReport) -> str:
     tips = {i: f"{c.title}: “{c.quote}”" if c.quote else c.title
             for i, c in enumerate(report.sources, 1)}
@@ -132,7 +138,7 @@ def to_html(report: ResearchReport) -> str:
         f"{s.get('verified_%', '?')}% of findings verified" if "verified_%" in s else "",
         f"claim support {s['claim_support_%']}%" if s.get("claim_support_%") is not None else "",
         f"{len(report.sources)} sources",
-        f"cost ${s['usd']:.2f}" if isinstance(s.get("usd"), (int, float)) else "",
+        f"cost {cost_label(s)}" if isinstance(s.get("usd"), (int, float)) else "",
         f"{s['wall_time_s']}s" if "wall_time_s" in s else ""] if x)
     title = html.escape(report.question.splitlines()[0][:120])
     return (f"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"

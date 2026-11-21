@@ -7,7 +7,7 @@ import pytest
 
 from swarm.app import ResearchOptions, resolve, run_research
 from swarm.errors import SearchAuthError, SearchQuotaExhausted
-from swarm.export import from_json, markdown_to_html, to_html, to_json
+from swarm.export import cost_label, from_json, markdown_to_html, to_html, to_json
 from swarm.research import PRESETS, AnthropicResearchLLM, MockResearchLLM, config_from, deep_research
 from swarm.search import CachedProvider, LocalDocs, MockSearch, SearchFilters, quote_is_grounded
 from swarm.search.tinyfish import TinyFish
@@ -268,3 +268,8 @@ def test_server_end_to_end_with_mock(tmp_path, monkeypatch):
         bad = c.post("/api/research", json={"question": "Q?", "preset": "huge"}, headers=auth)
         assert bad.status_code == 422
     assert list(tmp_path.glob("*.json"))  # finished jobs persisted
+
+
+def test_cost_label_marks_mock_runs_as_simulated():
+    assert cost_label({"usd": 0.451, "run_search": "tinyfish"}) == "$0.45"
+    assert cost_label({"usd": 0.451, "run_search": "mock"}).startswith("$0.45 simulated")

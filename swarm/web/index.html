@@ -161,7 +161,7 @@ async function finish(j) {
   $("status").textContent = "Done"; $("status").className = "ok";
   const s = j.stats || {};
   const chips = [
-    s.usd != null && `$${s.usd.toFixed(2)}`, s.wall_time_s != null && `${Math.round(s.wall_time_s)}s`,
+    s.usd != null && `$${s.usd.toFixed(2)}${s.run_search === "mock" ? " simulated" : ""}`, s.wall_time_s != null && `${Math.round(s.wall_time_s)}s`,
     s["verified_%"] != null && `${s["verified_%"]}% findings verified`,
     s["claim_support_%"] != null && `${s["claim_support_%"]}% claims supported`,
     s.sources != null && `${s.sources} sources`, s.injection_excluded && `${s.injection_excluded} excluded (injection)`,
