@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.1.0 — any OpenAI-compatible model provider
 - **Any OpenAI-compatible model provider** (DeepSeek, Together, DeepInfra, OpenRouter, vLLM,
   Ollama ...): `--provider openai --base-url URL --model ID --price IN,OUT`, or the same in
   `swarm.toml`. It uses the same pipeline as Claude: free TinyFish search as function tools,
