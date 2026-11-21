@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.2.0 — build, write, analyze, review, doc, and batch task kinds
 - **Five new workflows** (`docs/workflows.md`), each parallel, each checked by something other than
   the model, on Claude or any OpenAI-compatible provider, with a hard `--max-usd` cap:
   - `swarm build "description" --out app`: builds a new app. A lead engineer writes a spec with
