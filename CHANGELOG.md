@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.3.0 — production server: durable jobs, workers, API keys, metrics, deploy kits
 - **A production-ready server** (`docs/deployment.md`):
   - **Durable jobs:** a SQLite job queue in WAL mode, shared by the API and worker
     processes. Workers claim jobs in a transaction, heartbeat, and are recovered after a
