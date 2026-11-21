@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (3.0.1)
+## 3.0.1 — bug fixes
 Fixes from a code audit, each with a regression test (`tests/test_audit.py`).
 
 - **Exhausted search quota or bad key now stops the run.** Before, the error went to the

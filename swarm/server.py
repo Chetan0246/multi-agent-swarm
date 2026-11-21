@@ -27,6 +27,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .app import ResearchOptions, aclose, resolve, run_research
 from .config import load_config
 from .export import from_json, to_html, to_json
@@ -122,7 +123,7 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None):
         question: str = Field(min_length=3, max_length=2000)
         max_usd: float | None = Field(default=None, gt=0)
 
-    app = FastAPI(title="multi-agent-swarm", version="3.0.0", docs_url="/api/docs")
+    app = FastAPI(title="multi-agent-swarm", version=__version__, docs_url="/api/docs")
 
     def options(body: ResearchIn, question: str | None = None) -> ResearchOptions:
         if body.preset not in ("quick", "standard", "deep"):

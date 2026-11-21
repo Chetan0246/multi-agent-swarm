@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multi-agent-swarm"
-version = "3.0.0"
+version = "3.0.1"
 description = "Deep research with a multi-agent swarm on Claude: free web search, parallel cited workers, every quote checked against its source"
 readme = "README.md"
 license = "MIT"
