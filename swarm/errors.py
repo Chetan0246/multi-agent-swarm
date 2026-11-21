@@ -6,6 +6,8 @@ class SwarmError(Exception):
     """Base class. `hint` tells the user how to fix it."""
 
     hint: str = ""
+    # Fatal: retrying any task can't help (bad key, quota gone). The engine stops the run.
+    fatal: bool = False
 
     def __init__(self, message: str, hint: str | None = None):
         super().__init__(message)
@@ -21,15 +23,21 @@ class ConfigError(SwarmError):
     hint = "check swarm.toml or your environment variables (swarm doctor shows the resolved config)"
 
 
+class UnknownModel(ConfigError, KeyError):
+    hint = "use a model listed in swarm/pricing.py, or add a price with swarm.pricing.register_price"
+
+
 class MissingKey(SwarmError):
-    pass
+    fatal = True
 
 
 class SearchAuthError(SwarmError):
+    fatal = True
     hint = "check TINYFISH_API_KEY; create a free key at https://agent.tinyfish.ai/api-keys"
 
 
 class SearchQuotaExhausted(SwarmError):
+    fatal = True
     hint = ("TinyFish's free daily allowance is used up (it resets at 00:00 UTC). Wait, use "
             "--search anthropic (paid), or rely on the local cache for repeated questions")
 

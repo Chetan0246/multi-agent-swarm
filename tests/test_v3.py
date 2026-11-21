@@ -101,6 +101,7 @@ def test_cache_serves_repeats_without_calling_provider(tmp_path):
     asyncio.run(c.fetch([a[0].url]))
     asyncio.run(c.fetch([a[0].url]))
     assert inner.stats["fetched_urls"] == 1
+    asyncio.run(c.aclose())
 
 
 def test_local_docs_search_and_read(tmp_path):

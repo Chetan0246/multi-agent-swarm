@@ -27,7 +27,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from .app import ResearchOptions, resolve, run_research
+from .app import ResearchOptions, aclose, resolve, run_research
 from .config import load_config
 from .export import from_json, to_html, to_json
 from .pricing import estimate_research
@@ -44,6 +44,7 @@ class Job:
     report: ResearchReport | None = None
     error: str | None = None
     parent: str | None = None
+    options: dict[str, Any] = field(default_factory=dict)  # the request, reused by follow-ups
     changed: asyncio.Event = field(default_factory=asyncio.Event)
 
     def emit(self, kind: str, data: dict) -> None:
@@ -64,11 +65,13 @@ class JobStore:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.jobs: dict[str, Job] = {}
         self.slots = asyncio.Semaphore(max_concurrent)
-        for p in sorted(self.dir.glob("*.json"))[-200:]:
+        # Job ids are random, so sort by modification time to load the 200 most recent.
+        for p in sorted(self.dir.glob("*.json"), key=lambda p: p.stat().st_mtime)[-200:]:
             try:
                 d = json.loads(p.read_text())
                 job = Job(d["id"], d["question"], d["status"], d["created"], d.get("events", []),
-                          from_json(d["report"]) if d.get("report") else None, d.get("error"), d.get("parent"))
+                          from_json(d["report"]) if d.get("report") else None, d.get("error"),
+                          d.get("parent"), d.get("options") or {})
                 self.jobs[job.id] = job
             except (ValueError, KeyError, TypeError):
                 continue
@@ -76,6 +79,7 @@ class JobStore:
     def save(self, job: Job) -> None:
         d = {"id": job.id, "question": job.question, "status": job.status, "created": job.created,
              "events": job.events[-200:], "error": job.error, "parent": job.parent,
+             "options": job.options,
              "report": to_json(job.report) if job.report else None}
         (self.dir / f"{job.id}.json").write_text(json.dumps(d))
 
@@ -125,6 +129,8 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None):
             raise HTTPException(422, "preset must be quick, standard or deep")
         if body.search not in ("tinyfish", "anthropic"):
             raise HTTPException(422, "search must be tinyfish or anthropic")
+        if body.kind not in (None, "web", "news", "research_paper"):
+            raise HTTPException(422, "kind must be web, news or research_paper")
         if body.mock and not allow_mock:
             raise HTTPException(403, "mock runs are disabled on this server")
         return ResearchOptions(
@@ -147,9 +153,12 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None):
                 job.emit("error", {"error": str(e)})
             store.save(job)
 
-    def start(opts: ResearchOptions, prior: ResearchReport | None = None, parent: str | None = None) -> Job:
-        resolve(opts)  # fail fast on config/key errors (raised as 400 below)
-        job = Job(uuid.uuid4().hex[:12], opts.question, parent=parent)
+    async def start(body: ResearchIn, opts: ResearchOptions, prior: ResearchReport | None = None,
+                    parent: str | None = None) -> Job:
+        llm, _, _ = resolve(opts)  # fail fast on config/key errors (raised as 400 below)
+        await aclose(llm)  # only a check: run_job resolves its own clients
+        job = Job(uuid.uuid4().hex[:12], opts.question, parent=parent,
+                  options=body.model_dump(exclude={"question"}))
         store.jobs[job.id] = job
         asyncio.get_running_loop().create_task(run_job(job, opts, prior))
         return job
@@ -172,7 +181,8 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None):
         from .research import PRESETS
 
         p = PRESETS.get(preset, PRESETS["standard"])
-        e = estimate_research("claude-opus-5-5", p["max_subquestions"], p["max_searches"], p["efforts"],
+        model = os.environ.get("SWARM_MODEL") or cfg.get("research", {}).get("model", "claude-opus-5-5")
+        e = estimate_research(model, p["max_subquestions"], p["max_searches"], p["efforts"],
                               free_search=search != "anthropic")
         return {"low_usd": round(e.low_usd, 2), "high_usd": round(e.high_usd, 2), "text": str(e),
                 "cap_usd": min(p["max_usd"], max_usd_job)}
@@ -180,7 +190,7 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None):
     @app.post("/api/research", dependencies=[Depends(auth)], status_code=202)
     async def research(body: ResearchIn) -> dict:
         try:
-            job = start(options(body))
+            job = await start(body, options(body))
         except HTTPException:
             raise
         except Exception as e:
@@ -192,10 +202,17 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None):
         parent = get(job_id)
         if parent.report is None:
             raise HTTPException(409, "the job has no finished report yet")
-        mock = bool(parent.report.stats.get("run_search") == "mock")
-        base = ResearchIn(question=body.question, max_usd=body.max_usd, mock=mock)
+        # Same preset, search and source filters as the parent (jobs saved before options were
+        # recorded fall back to the defaults, plus mock if the parent was a mock run).
+        inherited = {k: v for k, v in parent.options.items() if k in ResearchIn.model_fields}
+        inherited.setdefault("mock", parent.report.stats.get("run_search") == "mock")
+        if body.max_usd is not None:
+            inherited["max_usd"] = body.max_usd
         try:
-            job = start(options(base), prior=parent.report, parent=job_id)
+            base = ResearchIn(**{**inherited, "question": body.question})
+            job = await start(base, options(base), prior=parent.report, parent=job_id)
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(400, str(e)) from e
         return {"id": job.id}

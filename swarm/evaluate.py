@@ -68,8 +68,9 @@ def direct_answer(markdown: str) -> str:
 
 
 def is_correct(markdown: str, answers: list[str]) -> bool:
+    """Whole-word match in the direct answer, so "Rust" doesn't match "trust" or "5700" "57000"."""
     head = _norm(direct_answer(markdown))
-    return any(_norm(a) in head for a in answers)
+    return any(re.search(rf"(?<!\w){re.escape(_norm(a).strip())}(?!\w)", head) for a in answers)
 
 
 async def single_agent(question: str, llm: ResearchLLM, cfg: ResearchConfig) -> tuple[str, float]:

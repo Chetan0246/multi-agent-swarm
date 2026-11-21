@@ -145,7 +145,7 @@ def cmd_run(a: argparse.Namespace) -> None:
 def cmd_research(a: argparse.Namespace) -> None:
     import asyncio
 
-    from .app import ResearchOptions, resolve, run_research
+    from .app import ResearchOptions, aclose, resolve, run_research
     from .export import cost_label, load_report, write_report
     from .pricing import estimate_research
 
@@ -156,7 +156,8 @@ def cmd_research(a: argparse.Namespace) -> None:
         language=a.language, model=a.model, worker_model=a.worker_model, max_usd=a.max_usd,
         max_subquestions=a.max_subquestions, max_agents=a.max_agents, max_searches=a.max_searches,
         check_claims=False if a.no_claim_check else None, use_cache=not a.no_cache, config_path=a.config)
-    _, cfg, info = resolve(opts)
+    llm, cfg, info = resolve(opts)
+    asyncio.run(aclose(llm))  # resolved only for the estimate; run_research builds its own
     est = estimate_research(cfg.model, cfg.max_subquestions, cfg.max_searches, cfg.efforts,
                             free_search=cfg.free_search)
     cap = f"cap ${cfg.max_usd:.2f}" if cfg.max_usd else "no cap"

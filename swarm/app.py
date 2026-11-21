@@ -85,6 +85,15 @@ def resolve(opts: ResearchOptions) -> tuple[ResearchLLM, ResearchConfig, dict[st
 async def run_research(opts: ResearchOptions, on_event=None, prior: ResearchReport | None = None
                        ) -> ResearchReport:
     llm, cfg, info = resolve(opts)
-    report = await deep_research(opts.question, llm, cfg, on_event=on_event, prior=prior)
+    try:
+        report = await deep_research(opts.question, llm, cfg, on_event=on_event, prior=prior)
+    finally:
+        await aclose(llm)
     report.stats.update({f"run_{k}": v for k, v in info.items()})
     return report
+
+
+async def aclose(llm: ResearchLLM) -> None:
+    """Release network clients and the cache database held by a resolved LLM (if any)."""
+    if (close := getattr(llm, "aclose", None)) is not None:
+        await close()

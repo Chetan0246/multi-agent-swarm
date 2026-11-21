@@ -130,6 +130,7 @@ class Swarm:
         self.journal_path = journal_path
         self.policy_path = policy_path
         self.on_event = on_event
+        self.fatal: BaseException | None = None  # first fatal error of the last run, if any
         c = self.cfg
         self.policy: AdaptivePolicy | StaticPolicy
         if c.adaptive:
@@ -150,6 +151,7 @@ class Swarm:
     async def arun(self, tasks: list[Task]) -> RunReport:
         cfg, ladder, policy = self.cfg, self.cfg.ladder, self.policy
         t0 = time.perf_counter()
+        self.fatal = None
         journal = Journal(self.journal_path)
         results: dict[str, Result] = {}
         counters = dict(throttles=0, transient_errors=0, hedges=0, hedge_wins=0,
@@ -159,7 +161,9 @@ class Swarm:
         groups: dict[str, list[Task]] = {}
         for t in tasks:
             rec = journal.done.get(t.id)
-            if rec is not None and rec.get("ok"):
+            # Resume only if the journalled task had the same prompt: a reused state dir with a
+            # different workload must not hand back another task's answer under the same id.
+            if rec is not None and rec.get("ok") and rec.get("fp") == t.fingerprint:
                 results[t.id] = Result(**{k: rec[k] for k in Result.__dataclass_fields__ if k in rec})
                 counters["resumed"] += 1
                 continue
@@ -407,6 +411,14 @@ class Swarm:
                 except Exception as e:  # non-retryable (4xx, bugs): fail fast, keep going
                     breaker.release(model)
                     budget.settle(est, 0.0)
+                    if getattr(e, "fatal", False):  # bad key, quota gone: no task can succeed
+                        self.fatal = self.fatal or e
+                        counters["fatal_errors"] = counters.get("fatal_errors", 0) + 1
+                        for t in batch.tasks:
+                            finalize(t, False, f"fatal: {type(e).__name__}")
+                        drain(f"fatal: {type(e).__name__}")
+                        changed.set()
+                        continue
                     for t in batch.tasks:
                         finalize(t, False, f"{type(e).__name__}: {e}")
                     changed.set()

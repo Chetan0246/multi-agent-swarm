@@ -282,7 +282,7 @@ class AnthropicBatchBackend:
                 kind = res.type
                 if kind == "succeeded":
                     f.set_result(parse_message(res.message, price_mult=0.5))
-                elif kind == "errored" and res.error.type == "invalid_request":
+                elif kind == "errored" and res.error.error.type == "invalid_request_error":
                     f.set_exception(ValueError(f"invalid_request in batch {batch.id}"))
                 else:  # server error, expired, canceled: safe to resubmit
                     f.set_exception(TransientError(f"batch result {kind}"))

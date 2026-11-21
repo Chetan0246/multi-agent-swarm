@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased (3.0.1)
+Fixes from a code audit, each with a regression test (`tests/test_audit.py`).
+
+- **Exhausted search quota or bad key now stops the run.** Before, the error went to the
+  model as a tool message and the run kept paying for Claude while every search failed. Now
+  the remaining sub-questions are cancelled. If nothing was found, the error is shown with its
+  hint; otherwise the report says it stopped early (`stopped_early` in stats).
+- **Cost accuracy:**
+  - `--worker-model` runs are now priced, and capped, at the worker model's rates.
+  - An unknown model fails before any spend, with a clear error instead of a traceback.
+  - Tokens from worker calls that failed partway through are now counted.
+- **Batches API:** `invalid_request` results were never recognised, so they were resubmitted
+  as transient errors. They now fail at once.
+- **Resume:** `swarm run` reuses a journalled answer only if the task's prompt is unchanged
+  (before, a reused state dir could return another workload's answers under the same ids).
+- **Follow-ups:**
+  - In the web UI and API, follow-ups keep the parent's preset, search and source filters.
+  - Finding ids no longer collide.
+- **Reports:**
+  - Source links with `&` in the URL work in HTML reports.
+  - Page titles can no longer inject Markdown links or images into the Sources list.
+- **Eval:** answers are matched as whole words ("Rust" no longer matches "trust").
+- **Resources:** HTTP clients and the cache database are closed after each run and server job.
+- **Validation:** the API checks `kind`, and the estimate endpoint uses the configured model.
+- **Robustness:** non-JSON TinyFish responses and documents with no word tokens are handled.
+
 ## 3.0.0 — first public release
 **Breaking:** the default web search provider is now TinyFish (free). Set `TINYFISH_API_KEY`,
 or pass `--search anthropic` to keep Claude's server-side search.

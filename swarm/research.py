@@ -28,7 +28,7 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from .backends import BatchResponse, CallUsage, RateLimited, TransientError, classify_429
-from .errors import MissingKey, missing_anthropic_key
+from .errors import MissingKey, SearchAuthError, SearchQuotaExhausted, missing_anthropic_key
 from .orchestrator import RunReport, Swarm
 from .planner import PlanConfig, Rung
 from .pricing import WEB_SEARCH_USD_PER_1K, estimate_research, price_of, usage_usd, usd_to_billed_tokens
@@ -192,16 +192,21 @@ def _tool_defs(web: bool, docs: bool) -> list[dict]:
 
 
 def _parse_json_obj(text: str) -> dict:
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", text, re.S)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except json.JSONDecodeError:
-                pass
+    """The first JSON object in `text` ({} if none; a top-level list or string is not one)."""
+    for candidate in (text, (m.group(0) if (m := re.search(r"\{.*\}", text, re.S)) else "")):
+        try:
+            d = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(d, dict):
+            return d
     return {}
+
+
+def _md_title(title: str) -> str:
+    """A web page title made safe as Markdown link text (titles are untrusted input)."""
+    t = re.sub(r"\s+", " ", title).strip()
+    return re.sub(r"[\[\]<>!`]", lambda m: {"[": "(", "]": ")"}.get(m.group(0), ""), t)
 
 
 SYNTH_SYSTEM = (
@@ -325,15 +330,17 @@ class ResearchBackend:
 
     bulk = False
 
-    def __init__(self, llm: ResearchLLM, question: str):
+    def __init__(self, llm: ResearchLLM, question: str, price_model: str | None = None):
         self.llm = llm
         self.question = question
+        self.price_model = price_model  # the model workers actually run on (--worker-model)
         self.searches = 0
         self.usd = 0.0
 
     async def run_batch(self, tasks: list[Task], effort: str, model: str) -> BatchResponse:
         results = await asyncio.gather(
             *(self.llm.investigate(self.question, t.prompt, model, effort) for t in tasks))
+        model = self.price_model or model
         usage = CallUsage()
         answers: dict[str, str] = {}
         searches = 0
@@ -426,9 +433,14 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
     if cfg.max_usd is not None and est.low_usd > cfg.max_usd:
         raise OverBudget(f"estimated {est} exceeds the ${cfg.max_usd:.2f} cap; raise --max-usd "
                          f"or lower --max-subquestions")
+    # Workers may run on a cheaper model; price them by it, and fail now (before any spend)
+    # if it has no known price.
+    worker_model = getattr(llm, "worker_model", None) or cfg.model
+    price_of(worker_model)
     # Workers get 70% of the cap; planning, synthesis and claim checking share the rest.
-    worker_budget = (usd_to_billed_tokens(cfg.model, 0.7 * cfg.max_usd)
+    worker_budget = (usd_to_billed_tokens(worker_model, 0.7 * cfg.max_usd)
                      if cfg.max_usd is not None else None)
+    take_lost = getattr(llm, "take_lost_usage", None)  # usage of worker calls that failed midway
 
     # 1. plan ----------------------------------------------------------------------------
     subs, plan_usage = await llm.plan(plan_question, cfg.max_subquestions, cfg.model, cfg.plan_effort)
@@ -437,12 +449,15 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
     if not subs:
         subs = [{"question": question, "difficulty": 2}]
     check = citation_validator(cfg.min_citations, cfg.min_domains)
-    offset = len(prior.findings) if prior is not None else 0
+    # Follow-ups continue the numbering after the highest earlier id (findings with no text
+    # were dropped, so the count can be lower than the last id).
+    offset = max((int(m.group(1)) for f in (prior.findings if prior is not None else [])
+                  if (m := re.fullmatch(r"q(\d+)", f.sub_id))), default=0)
     tasks = [Task(f"q{offset + i + 1}", s["question"], max(1, min(3, int(s.get("difficulty", 2)))),
                   validator=check) for i, s in enumerate(subs)]
 
     # 2. parallel research through the swarm engine ---------------------------------------
-    backend = ResearchBackend(llm, report_question)
+    backend = ResearchBackend(llm, report_question, worker_model)
     pcfg = PlanConfig(
         ladder=tuple(Rung(cfg.model, e) for e in cfg.efforts),
         adaptive=False, static_batch=1, max_batch=1,  # one web-research call per sub-question
@@ -450,8 +465,14 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
         top_rung_retries=1, token_budget=worker_budget,
     )
     agents = max(1, min(cfg.max_agents, len(tasks)))  # one worker per sub-question, no idle extras
-    run: RunReport = await Swarm(backend, pcfg, agents=agents, on_event=on_event).arun(tasks)
+    engine = Swarm(backend, pcfg, agents=agents, on_event=on_event)
+    run: RunReport = await engine.arun(tasks)
     usd += backend.usd
+    if take_lost is not None:
+        usd += usage_usd(worker_model, take_lost())
+    stopped = engine.fatal  # bad key or exhausted search quota: the rest of the run was cancelled
+    if stopped is not None and not any(r.ok and r.answer for r in run.results.values()):
+        raise stopped  # nothing was found: a report would be empty, so report the cause instead
 
     # 3. collect findings; number sources; pool quotes per source ------------------------------
     findings: list[Finding] = []
@@ -544,13 +565,16 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
                                     f"(marked ⚠).\n")
 
     # 6. excluded findings, sanitising, sources -----------------------------------------------
+    if stopped is not None:
+        md = md.rstrip() + ("\n\n> **Research stopped early:** "
+                            f"{str(stopped).splitlines()[0]}. Some sub-questions were not researched.\n")
     excluded = [f for f in findings if f.flags]
     if excluded:
         md = md.rstrip() + "\n\n> **Excluded for suspected prompt injection:** " + "; ".join(
             f"{f.sub_id} ({f.question})" for f in excluded) + ".\n"
     md, sanitized = sanitize_report(md, {c.url for c in sources})
     md = md.rstrip() + "\n\n## Sources\n\n" + "\n".join(
-        f"{i}. [{c.title or c.url}]({c.url})" for i, c in enumerate(sources, 1)) + "\n"
+        f"{i}. [{_md_title(c.title) or c.url}]({c.url})" for i, c in enumerate(sources, 1)) + "\n"
 
     billed = run.billed_equiv_tokens + plan_usage.billed_equiv + synth_usage.billed_equiv
     stats = {
@@ -573,6 +597,7 @@ async def deep_research(question: str, llm: ResearchLLM, cfg: ResearchConfig | N
         "followup_of": prior.question if prior is not None else None,
         **({"search_" + k: v for k, v in getattr(llm, "search_stats", {}).items()}),
         "injection_excluded": len(excluded),
+        "stopped_early": type(stopped).__name__ if stopped is not None else None,
         "unsafe_markup_removed": sanitized,
         **integrity,
         **claim_stats,
@@ -629,6 +654,20 @@ class AnthropicResearchLLM:
         self.worker_model = worker_model
         self.language = language
         self.stats = {"ungrounded_quotes_dropped": 0, "tool_calls": 0}
+        # Tokens billed by worker calls that then failed (e.g. a 5xx on tool turn 4): the
+        # engine never sees their usage, so deep_research adds it to the run's cost.
+        self._lost = CallUsage()
+
+    async def aclose(self) -> None:
+        """Close the search providers' HTTP clients / cache database and the Claude client."""
+        for p in (self.search, self.docs):
+            if (close := getattr(p, "aclose", None)) is not None:
+                await close()
+        await self.client.close()
+
+    def take_lost_usage(self) -> CallUsage:
+        lost, self._lost = self._lost, CallUsage()
+        return lost
 
     @property
     def paid_search(self) -> bool:
@@ -696,9 +735,13 @@ class AnthropicResearchLLM:
         usage, searches = CallUsage(), 0
         blocks: list[Any] = []  # everything the paused turn has produced so far
         for _ in range(self.max_continuations + 1):
-            msg = await self._create(model=model, max_tokens=16000, system=WORKER_SYSTEM,
-                                     messages=messages, tools=tools,
-                                     output_config={"effort": effort})
+            try:
+                msg = await self._create(model=model, max_tokens=16000, system=WORKER_SYSTEM,
+                                         messages=messages, tools=tools,
+                                         output_config={"effort": effort})
+            except BaseException:
+                _add(self._lost, usage)
+                raise
             u, s = _usage(msg)
             _add(usage, u)
             searches += s
@@ -724,6 +767,8 @@ class AnthropicResearchLLM:
     async def _run_tool(self, name: str, args: dict, corpus: dict[str, tuple[str, str]]) -> str:
         """Execute one client-side tool; record returned text in `corpus` for quote checks."""
         self.stats["tool_calls"] += 1
+        if name not in ("web_search", "web_fetch", "search_documents", "read_document"):
+            return f"Tool error: unknown tool {name!r}"
         try:
             if name in ("web_search", "search_documents"):
                 provider = self.search if name == "web_search" else self.docs
@@ -754,7 +799,9 @@ class AnthropicResearchLLM:
                     corpus[pg.url] = (pg.title or t, prev + "\n" + text)
                     parts.append(f"URL: {pg.url}\nTITLE: {pg.title}\n{text}")
                 body = "\n\n---\n\n".join(parts) or "Nothing fetched."
-        except Exception as e:  # tool errors go back to the model, not up the stack
+        except (SearchAuthError, SearchQuotaExhausted):
+            raise  # fatal: every later search fails too, so stop the run instead of paying on
+        except Exception as e:  # other tool errors go back to the model, not up the stack
             return f"Tool error: {e}"
         return f"<untrusted_content>\n{body}\n</untrusted_content>"
 
@@ -769,18 +816,27 @@ class AnthropicResearchLLM:
         msg = None
         for turn in range(self.max_tool_turns + 1):
             last = turn == self.max_tool_turns
-            msg = await self._create(
-                model=model, max_tokens=16000, system=TOOL_WORKER_SYSTEM, messages=messages,
-                tools=tools, tool_choice={"type": "none"} if last else {"type": "auto"},
-                cache_control={"type": "ephemeral"},  # the growing conversation is re-read each turn
-                output_config={"effort": effort,
-                               "format": {"type": "json_schema", "schema": TOOL_WORKER_SCHEMA}})
+            try:
+                msg = await self._create(
+                    model=model, max_tokens=16000, system=TOOL_WORKER_SYSTEM, messages=messages,
+                    tools=tools, tool_choice={"type": "none"} if last else {"type": "auto"},
+                    cache_control={"type": "ephemeral"},  # the growing conversation is re-read each turn
+                    output_config={"effort": effort,
+                                   "format": {"type": "json_schema", "schema": TOOL_WORKER_SCHEMA}})
+            except BaseException:
+                _add(self._lost, usage)  # earlier turns were billed even though this call failed
+                raise
             u, _ = _usage(msg)
             _add(usage, u)
             if msg.stop_reason != "tool_use":
                 break
             calls = [b for b in msg.content if b.type == "tool_use"]
-            outputs = await asyncio.gather(*(self._run_tool(b.name, dict(b.input), corpus) for b in calls))
+            try:
+                outputs = await asyncio.gather(*(self._run_tool(b.name, dict(b.input), corpus)
+                                                 for b in calls))
+            except BaseException:
+                _add(self._lost, usage)
+                raise
             messages.append({"role": "assistant", "content": msg.content})
             messages.append({"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": b.id, "content": out}

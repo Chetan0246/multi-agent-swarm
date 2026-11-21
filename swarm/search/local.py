@@ -66,7 +66,8 @@ class LocalDocs:
             df.update(tf.keys())
         n_docs = max(1, len(self.passages))
         self._idf = {w: math.log(1 + (n_docs - d + 0.5) / (d + 0.5)) for w, d in df.items()}
-        self._avg = sum(sum(tf.values()) for tf in self._tf) / n_docs if self._tf else 1.0
+        # max(1, ...): passages with no word tokens (e.g. only symbols) must not divide by zero
+        self._avg = max(1.0, sum(sum(tf.values()) for tf in self._tf) / n_docs)
         self.stats = {"documents": len(files), "passages": len(self.passages), "searches": 0}
 
     def _score(self, q: list[str], i: int, k1: float = 1.5, b: float = 0.75) -> float:

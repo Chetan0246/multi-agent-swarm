@@ -48,7 +48,11 @@ class TinyFish:
                 await asyncio.sleep(2 ** attempt)
                 continue
             if r.status_code == 200:
-                return r.json()
+                try:
+                    data = r.json()
+                except ValueError as e:
+                    raise SearchUnavailable("TinyFish returned a response that is not JSON") from e
+                return data if isinstance(data, dict) else {}
             body: dict[str, Any] = {}
             with contextlib.suppress(ValueError):
                 body = r.json()

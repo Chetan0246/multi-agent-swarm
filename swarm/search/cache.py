@@ -24,6 +24,11 @@ class CachedProvider:
         self.hits = 0
         self.misses = 0
 
+    async def aclose(self) -> None:
+        self.db.close()
+        if (close := getattr(self.inner, "aclose", None)) is not None:
+            await close()
+
     @property
     def stats(self) -> dict:
         return {**getattr(self.inner, "stats", {}), "cache_hits": self.hits, "cache_misses": self.misses}

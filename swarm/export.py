@@ -46,7 +46,8 @@ def _inline(text: str, tips: dict[int, str]) -> str:
     out = html.escape(text, quote=False)
     for rx, rep in _INLINE:
         out = rx.sub(rep, out)
-    out = _LINK.sub(lambda m: f'<a href="{html.escape(m.group(2))}" target="_blank" '
+    # The text is already escaped: unescape the URL once so `&` isn't doubled to `&amp;amp;`.
+    out = _LINK.sub(lambda m: f'<a href="{html.escape(html.unescape(m.group(2)))}" target="_blank" '
                               f'rel="noopener noreferrer">{m.group(1)}</a>', out)
 
     def ref(m: re.Match) -> str:

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .backends import CallUsage
+from .errors import UnknownModel
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,7 @@ def register_price(model: str, price: Price) -> None:
 
 def price_of(model: str) -> Price:
     if model not in PRICES:
-        raise KeyError(f"no price for {model!r}; add one with swarm.pricing.register_price")
+        raise UnknownModel(f"no price for model {model!r}")
     return PRICES[model]
 
 
