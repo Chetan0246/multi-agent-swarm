@@ -32,6 +32,12 @@ JOB_KINDS = ("research", "write", "doc")
 # ----------------------------------------------------------------------------- runners
 
 
+def _tag_spend(e: BaseException, usd: float) -> None:
+    """A failed or cancelled job still spent money; carry it to the worker for the budget."""
+    with contextlib.suppress(AttributeError):  # exceptions with __slots__ can't carry it
+        e.swarm_usd = usd  # type: ignore[attr-defined]
+
+
 async def run_research(job: dict, emit: Emit, db: JobDB, config_path: str | None) -> tuple[Any, float | None]:
     from .app import ResearchOptions
     from .app import run_research as _run
@@ -58,6 +64,9 @@ async def run_write(job: dict, emit: Emit, db: JobDB, config_path: str | None) -
     try:
         res = await write(p["brief"], chat, words=int(p.get("words", 1500)), max_sections=int(p.get("sections", 8)),
                           log=lambda m: emit("log", {"message": m}))
+    except BaseException as e:
+        _tag_spend(e, chat.usd)
+        raise
     finally:
         await chat.aclose()
     return {"markdown": res.markdown, "title": res.title, "words": res.words, "edited": res.edited}, res.usd
@@ -79,6 +88,9 @@ async def run_doc(job: dict, emit: Emit, db: JobDB, config_path: str | None) -> 
         else:
             res = await transform(p["text"], chat, f"rewrite it as: {p['style']}",
                                   "how each is written in the new style", log=say)
+    except BaseException as e:
+        _tag_spend(e, chat.usd)
+        raise
     finally:
         await chat.aclose()
     return {"text": res.text, "chunks": res.chunks, "failed_chunks": res.failed_chunks}, res.usd
@@ -142,26 +154,38 @@ class Worker:
         t0 = time.monotonic()
         emit = lambda kind, data: self.db.event(jid, kind, data)  # noqa: E731
         runner = self.runners.get(job["kind"])
+        task: asyncio.Task | None = None
+
+        async def stop_task() -> float | None:
+            """Cancel the running job; return what it spent, if the runner reported it."""
+            assert task is not None
+            task.cancel()
+            outcome: Any = (await asyncio.gather(task, return_exceptions=True))[0]
+            return getattr(outcome, "swarm_usd", None)
+
         try:
             if runner is None:
-                self.db.finish(jid, "error", error=f"unknown job kind {job['kind']!r}")
+                self.db.finish(jid, "error", error=f"unknown job kind {job['kind']!r}", worker=self.name)
                 return
             task = asyncio.create_task(runner(job, emit, self.db, self.config_path))
             while True:
                 done, _ = await asyncio.wait({task}, timeout=self.heartbeat)
                 if done:
                     break
-                status = self.db.heartbeat(jid)
+                status = self.db.heartbeat(jid, self.name)
+                if status == "lost":  # recovered and re-claimed elsewhere while we stalled: stop, don't finish
+                    await stop_task()
+                    log.warning("job lost to another worker; stopped this copy", extra={"job": jid})
+                    return
                 if status == "cancelling":
-                    task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
-                    self.db.finish(jid, "cancelled", error="cancelled by request")
+                    usd = await stop_task()
+                    self.db.finish(jid, "cancelled", error="cancelled by request", usd=usd, worker=self.name)
                     log.info("job cancelled", extra={"job": jid})
                     return
                 if time.monotonic() - t0 > self.timeout:
-                    task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
-                    self.db.finish(jid, "error", error=f"timed out after {self.timeout:.0f}s")
+                    usd = await stop_task()
+                    self.db.finish(jid, "error", error=f"timed out after {self.timeout:.0f}s", usd=usd,
+                                   worker=self.name)
                     log.warning("job timed out", extra={"job": jid, "timeout_s": self.timeout})
                     return
             try:
@@ -169,18 +193,21 @@ class Worker:
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # the job failed; the worker carries on
-                self.db.finish(jid, "error", error=str(e)[:2000])
+                self.db.finish(jid, "error", error=str(e)[:2000], usd=getattr(e, "swarm_usd", None),
+                               worker=self.name)
                 log.warning("job failed", extra={"job": jid, "kind": job["kind"], "error": type(e).__name__})
                 return
-            self.db.finish(jid, "done", result=result, usd=round(usd, 6) if usd is not None else None)
-            self.completed += 1
-            log.info("job done", extra={"job": jid, "kind": job["kind"], "usd": usd,
-                                        "seconds": round(time.monotonic() - t0, 1)})
+            if self.db.finish(jid, "done", result=result, usd=round(usd, 6) if usd is not None else None,
+                              worker=self.name):
+                self.completed += 1
+                log.info("job done", extra={"job": jid, "kind": job["kind"], "usd": usd,
+                                            "seconds": round(time.monotonic() - t0, 1)})
+            else:
+                log.warning("job finished after another worker took it over; result discarded", extra={"job": jid})
         except asyncio.CancelledError:  # worker shutdown
-            if "task" in locals():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
-            self.db.requeue(jid, "worker shutting down")
+            if task is not None:
+                await stop_task()
+            self.db.requeue(jid, "worker shutting down", worker=self.name)
             raise
         finally:
             self.running.pop(jid, None)

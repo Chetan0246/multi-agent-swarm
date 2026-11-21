@@ -28,6 +28,20 @@ from pathlib import Path
 from typing import Any
 
 TERMINAL = ("done", "error", "cancelled")
+
+
+class BudgetExceeded(Exception):
+    def __init__(self, spent: float, budget: float):
+        super().__init__(f"daily budget of ${budget:.2f} would be exceeded (${spent:.2f} spent or reserved today)")
+        self.spent, self.budget = spent, budget
+
+
+# What a job counts against its owner's daily budget: its cap while it may still spend; its
+# actual cost once known; its cap again when it failed or was cancelled after starting without
+# a known cost (it may have spent up to the cap, so the budget errs on the safe side).
+SPEND_SQL = ("SELECT COALESCE(SUM(CASE WHEN status IN ('queued', 'running', 'cancelling') THEN cap_usd "
+             "WHEN usd IS NOT NULL THEN usd WHEN started IS NOT NULL THEN cap_usd ELSE 0 END), 0) AS s "
+             "FROM jobs WHERE owner IS ? AND created >= ?")
 ACTIVE = ("queued", "running", "cancelling")
 
 SCHEMA = """
@@ -124,13 +138,19 @@ class JobDB:
     # ------------------------------------------------------------------ jobs
 
     def enqueue(self, kind: str, params: dict[str, Any], *, owner: str | None = None, parent: str | None = None,
-                cap_usd: float = 0.0) -> str:
+                cap_usd: float = 0.0, daily_budget: float | None = None) -> str:
+        """Queue a job. With `daily_budget`, the budget check and the insert happen in one write
+        transaction, so concurrent submissions can't both squeeze under the limit."""
         jid = uuid.uuid4().hex[:16]
-        with self.tx() as c:
+        with self.tx(immediate=True) as c:
+            if daily_budget is not None:
+                spent = float(c.execute(SPEND_SQL, (owner, _day_start())).fetchone()["s"])
+                if spent + cap_usd > daily_budget + 1e-9:
+                    raise BudgetExceeded(spent, daily_budget)
             c.execute("INSERT INTO jobs (id, kind, params, owner, parent, status, cap_usd, created) "
                       "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)",
                       (jid, kind, json.dumps(params), owner, parent, cap_usd, time.time()))
-        self.event(jid, "status", {"status": "queued"})
+            self.event(jid, "status", {"status": "queued"}, c)
         return jid
 
     def get(self, jid: str) -> dict[str, Any] | None:
@@ -165,32 +185,53 @@ class JobDB:
         self.event(row["id"], "status", {"status": "running", "worker": worker})
         return self.get(row["id"])
 
-    def heartbeat(self, jid: str) -> str | None:
-        """Refresh a running job's heartbeat; returns its status (e.g. 'cancelling')."""
+    def heartbeat(self, jid: str, worker: str | None = None) -> str | None:
+        """Refresh a running job's heartbeat; returns its status (e.g. 'cancelling').
+
+        With `worker`, only that worker's claim is refreshed, and "lost" is returned when the job
+        no longer belongs to it (it stalled, was recovered and re-claimed by another worker): the
+        caller must stop, or the job would run twice and be paid for twice."""
         with self.tx() as c:
-            c.execute("UPDATE jobs SET heartbeat = ? WHERE id = ? AND status IN ('running', 'cancelling')",
-                      (time.time(), jid))
-            row = c.execute("SELECT status FROM jobs WHERE id = ?", (jid,)).fetchone()
-        return row["status"] if row else None
+            row = c.execute("SELECT status, worker FROM jobs WHERE id = ?", (jid,)).fetchone()
+            if row is None:
+                return None
+            if worker is not None and (row["worker"] != worker or row["status"] not in ("running", "cancelling")):
+                return "lost"
+            c.execute("UPDATE jobs SET heartbeat = ? WHERE id = ?", (time.time(), jid))
+        return row["status"]
 
     def finish(self, jid: str, status: str, *, result: Any = None, error: str | None = None,
-               usd: float | None = None) -> None:
+               usd: float | None = None, worker: str | None = None) -> bool:
+        """Record the outcome. With `worker`, only if that worker still holds the job (returns
+        False otherwise, and changes nothing). The final event goes in the same transaction, so
+        a progress stream never sees a finished job without its final event."""
         assert status in TERMINAL
-        with self.tx() as c:
-            c.execute("UPDATE jobs SET status = ?, result = ?, error = ?, usd = ?, finished = ? WHERE id = ?",
-                      (status, json.dumps(result) if result is not None else None, error, usd, time.time(), jid))
         data: dict[str, Any] = {"status": status}
         if error:
             data["error"] = error
         if usd is not None:
             data["usd"] = usd
-        self.event(jid, "done" if status == "done" else status, data)
-
-    def requeue(self, jid: str, reason: str) -> None:
         with self.tx() as c:
-            c.execute("UPDATE jobs SET status = 'queued', worker = NULL, heartbeat = NULL WHERE id = ? "
-                      "AND status IN ('running', 'cancelling')", (jid,))
-        self.event(jid, "status", {"status": "queued", "reason": reason})
+            if worker is None:
+                n = c.execute("UPDATE jobs SET status = ?, result = ?, error = ?, usd = ?, finished = ? WHERE id = ?",
+                              (status, json.dumps(result) if result is not None else None, error, usd, time.time(),
+                               jid)).rowcount
+            else:
+                n = c.execute("UPDATE jobs SET status = ?, result = ?, error = ?, usd = ?, finished = ? WHERE id = ? "
+                              "AND worker = ? AND status IN ('running', 'cancelling')",
+                              (status, json.dumps(result) if result is not None else None, error, usd, time.time(),
+                               jid, worker)).rowcount
+            if n:
+                self.event(jid, "done" if status == "done" else status, data, c)
+        return bool(n)
+
+    def requeue(self, jid: str, reason: str, worker: str | None = None) -> None:
+        with self.tx() as c:
+            n = c.execute("UPDATE jobs SET status = 'queued', worker = NULL, heartbeat = NULL WHERE id = ? "
+                          "AND status IN ('running', 'cancelling') AND (? IS NULL OR worker = ?)",
+                          (jid, worker, worker)).rowcount
+            if n:
+                self.event(jid, "status", {"status": "queued", "reason": reason}, c)
 
     def cancel(self, jid: str) -> str | None:
         """Queued: cancelled at once. Running: flagged; the worker stops it at its next heartbeat."""
@@ -240,9 +281,9 @@ class JobDB:
 
     # ------------------------------------------------------------------ events
 
-    def event(self, jid: str, kind: str, data: dict[str, Any]) -> None:
-        self._conn().execute("INSERT INTO events (job_id, t, data) VALUES (?, ?, ?)",
-                             (jid, time.time(), json.dumps({"event": kind, **data}, default=str)))
+    def event(self, jid: str, kind: str, data: dict[str, Any], conn: sqlite3.Connection | None = None) -> None:
+        (conn or self._conn()).execute("INSERT INTO events (job_id, t, data) VALUES (?, ?, ?)",
+                                       (jid, time.time(), json.dumps({"event": kind, **data}, default=str)))
 
     def events(self, jid: str, after: int = 0, limit: int = 500) -> list[tuple[int, dict[str, Any]]]:
         rows = self._conn().execute("SELECT seq, t, data FROM events WHERE job_id = ? AND seq > ? "
@@ -253,12 +294,7 @@ class JobDB:
 
     def spend_today(self, owner: str | None) -> float:
         """Spent today plus the caps of jobs still queued or running (reserved)."""
-        day_start = time.time() - (time.time() % 86400)  # UTC midnight
-        row = self._conn().execute(
-            "SELECT COALESCE(SUM(CASE WHEN status IN ('queued', 'running', 'cancelling') THEN cap_usd "
-            "ELSE COALESCE(usd, 0) END), 0) AS s FROM jobs WHERE owner IS ? AND created >= ?",
-            (owner, day_start)).fetchone()
-        return float(row["s"])
+        return float(self._conn().execute(SPEND_SQL, (owner, _day_start())).fetchone()["s"])
 
     def stats(self) -> dict[str, Any]:
         c = self._conn()
@@ -267,6 +303,11 @@ class JobDB:
                                          "GROUP BY kind, status").fetchall()]
         oldest = c.execute("SELECT MIN(created) AS t FROM jobs WHERE status = 'queued'").fetchone()["t"]
         return {"by_kind_status": by, "oldest_queued_age_s": round(time.time() - oldest, 1) if oldest else 0.0}
+
+
+def _day_start() -> float:
+    now = time.time()
+    return now - (now % 86400)  # UTC midnight
 
 
 def _row(r: sqlite3.Row) -> dict[str, Any]:

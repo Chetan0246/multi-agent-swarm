@@ -43,20 +43,22 @@ class RunResult:
     timed_out: bool = False
 
 
-def _limits(cpu_s: int, mem_mb: int):  # pragma: no cover - runs in the child process
-    def apply() -> None:
-        try:
-            import resource
-
-            resource.setrlimit(resource.RLIMIT_CPU, (cpu_s, cpu_s))
-            mem = mem_mb * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
-            resource.setrlimit(resource.RLIMIT_FSIZE, (16 * 1024 * 1024, 16 * 1024 * 1024))
-            resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-        except (ImportError, ValueError, OSError):
-            pass  # not available on this platform: the wall-clock timeout still applies
-
-    return apply
+# Resource limits are applied by a tiny launcher that then exec()s the real interpreter, not by
+# `preexec_fn`, which is unsafe when the parent has threads (run_python is called from worker
+# threads so slow scripts don't block the event loop).
+_LAUNCHER = (
+    "import os, sys\n"
+    "try:\n"
+    "    import resource\n"
+    "    cpu, mem = int(sys.argv[1]), int(sys.argv[2]) * 1024 * 1024\n"
+    "    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))\n"
+    "    resource.setrlimit(resource.RLIMIT_AS, (mem, mem))\n"
+    "    resource.setrlimit(resource.RLIMIT_FSIZE, (16 << 20, 16 << 20))\n"
+    "    resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))\n"
+    "except (ImportError, ValueError, OSError):\n"
+    "    pass  # not available here: the wall-clock timeout still applies\n"
+    "os.execv(sys.argv[3], sys.argv[3:])\n"
+)
 
 
 def run_python(code: str, tests: str = "", timeout: float = 10.0, mem_mb: int = 512,
@@ -76,10 +78,12 @@ def run_python(code: str, tests: str = "", timeout: float = 10.0, mem_mb: int = 
                "MPLCONFIGDIR": str(tmp / ".mpl"), "MPLBACKEND": "Agg"}
         posix = os.name == "posix"
         try:
-            proc = subprocess.Popen(
-                [python or sys.executable, *(["-I"] if isolated else ["-E"]), str(script)], cwd=tmp, env=env,
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=posix,
-                preexec_fn=_limits(int(timeout) + 1, mem_mb) if posix else None)
+            py = python or sys.executable
+            target = [py, *(["-I"] if isolated else ["-E"]), str(script)]
+            argv = [sys.executable, "-I", "-c", _LAUNCHER, str(int(timeout) + 1), str(mem_mb), *target] if posix \
+                else target
+            proc = subprocess.Popen(argv, cwd=tmp, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, start_new_session=posix)
         except OSError as e:
             return RunResult(False, f"could not start python: {e}")
         try:

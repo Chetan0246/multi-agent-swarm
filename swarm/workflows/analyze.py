@@ -14,6 +14,7 @@ be reproduced. Uses pandas and matplotlib when your Python has them, else the st
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import csv
 import json
@@ -175,7 +176,9 @@ async def analyze(data: Path, question: str, chat: Chat, out: Path, *, max_quest
                                            f"Question: {q['question']}\nMethod: {q['method']}\nData profile:\n"
                                            f"{dumps(prof)}{feedback}", effort=effort, max_tokens=6000,
                                            role="analyze.code")
-                r = run_python(code, workdir=qdir, timeout=timeout, mem_mb=2048, python=python, isolated=False)
+                # In a thread: a slow script must not stall the other analysts' model calls.
+                r = await asyncio.to_thread(run_python, code, workdir=qdir, timeout=timeout, mem_mb=2048,
+                                            python=python, isolated=False)
                 (qdir / "analysis.py").write_text((qdir / "solution.py").read_text())
                 line = next((ln for ln in reversed(r.output.splitlines()) if ln.startswith("RESULT:")), None)
                 if r.ok and line:

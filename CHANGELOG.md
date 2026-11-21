@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+Fixes from an audit of the 3.1–3.3 code, each with a regression test (`tests/test_audit2.py`).
+
+- **A job could run twice and be paid for twice.** If a worker stalled long enough to be
+  recovered, it kept running after another worker re-claimed the job, and whichever finished
+  last overwrote the result. Heartbeats and results are now tied to the worker holding the
+  job; a worker that has lost a job stops its copy and discards the result.
+- **Daily budgets could be overshot:**
+  - Concurrent submissions could all pass the check before any was queued. The check now
+    happens in the same database transaction as the insert.
+  - Failed and cancelled jobs counted as free. They now count what they spent, or their cap
+    when the cost is unknown; write and doc jobs report their spend even when they fail.
+- **The request size limit was bypassable:** chunked uploads had no `Content-Length` to
+  check. The limit now counts the bytes that actually arrive, and a malformed
+  `Content-Length` returns 400 instead of 500.
+- **An unauthenticated server behind a reverse proxy was open to the internet.** Open mode
+  is now allowed only when every allowed host name is local.
+- **Live progress could miss a job's final event:** the status and the event were written
+  separately. They are now written together.
+- **Hardening:** the metrics token is compared in constant time, and client-supplied request
+  ids are sanitised.
+- **`swarm analyze` ran its analysts one at a time.** Each script ran on the event loop and
+  blocked the others. Scripts now run in threads; resource limits are set by a small launcher
+  instead of `preexec_fn`, which isn't thread-safe.
+- **`swarm build`:**
+  - A plan without tests no longer reports "tests pass".
+  - One unsafe path in a fixer's edits no longer aborts the whole build.
+- **`swarm review`:** a finding with a line like `"12-14"` no longer crashes the review.
+- **`swarm doc summarize`:** a model that never shortens its summaries can no longer loop
+  until the dollar cap.
+
 ## 3.3.0 — production server: durable jobs, workers, API keys, metrics, deploy kits
 - **A production-ready server** (`docs/deployment.md`):
   - **Durable jobs:** a SQLite job queue in WAL mode, shared by the API and worker

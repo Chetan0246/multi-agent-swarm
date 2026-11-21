@@ -152,9 +152,13 @@ async def summarize(text: str, chat: Chat, *, words: int = 400, max_chars: int =
 
     summaries = await summarize_all(parts, per, "doc.summary")
     failed = len(parts) - len(summaries)
-    while sum(len(s) for s in summaries) > 40_000:  # very long documents: merge in rounds
+    rounds = 0
+    # Very long documents: merge in rounds. Stop when one summary is left (it can't shrink by
+    # grouping) or after a few rounds, so a model that never shortens can't loop until the cap.
+    while sum(len(s) for s in summaries) > 40_000 and len(summaries) > 1 and rounds < 4:
         groups = ["\n\n".join(summaries[i:i + 8]) for i in range(0, len(summaries), 8)]
-        summaries = await summarize_all(groups, per * 2, "doc.summary")
+        summaries = await summarize_all(groups, per * 2, "doc.summary") or summaries[:1]
+        rounds += 1
     final = await chat.complete(MERGE_SYSTEM.format(words=words),
                                 "\n\n".join(f"Part {i + 1}:\n{s}" for i, s in enumerate(summaries)),
                                 effort="medium", max_tokens=8000, role="doc.merge")

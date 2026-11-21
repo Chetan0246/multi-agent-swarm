@@ -103,7 +103,8 @@ def ground(findings: list[dict], file: str, text: str) -> tuple[list[Finding], i
         if len(first) < 4 or _ws(quote) not in _ws(text):
             dropped += 1
             continue
-        line = int(f.get("line") or 0)
+        m = re.match(r"\s*(\d+)", str(f.get("line") or ""))  # models sometimes say "12-14" or "L12"
+        line = int(m.group(1)) if m else 0
         near = [i + 1 for i, ln in enumerate(lines) if first in _ws(ln)]
         if near and line not in near:
             line = min(near, key=lambda n: abs(n - line))

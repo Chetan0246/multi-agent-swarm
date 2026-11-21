@@ -27,9 +27,11 @@ survive restarts and the API can scale apart from the workers.
 # No `from __future__ import annotations` here: FastAPI resolves the endpoint annotations at
 # runtime, and the FastAPI types are imported inside create_app (the extra is optional).
 import asyncio
+import hmac
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -42,7 +44,7 @@ from .app import ResearchOptions, aclose, register_prices, resolve
 from .auth import Principal, RateLimiter, authenticate, has_keys
 from .config import load_config
 from .export import from_json, to_html
-from .jobs import TERMINAL, JobDB
+from .jobs import TERMINAL, BudgetExceeded, JobDB
 from .observability import Metrics, request_id, setup_logging
 from .pricing import estimate_research
 
@@ -82,6 +84,69 @@ SECURITY_HEADERS = {
     "permissions-policy": "camera=(), microphone=(), geolocation=()",
     "cross-origin-opener-policy": "same-origin",
 }
+
+
+class BodyLimit:
+    """ASGI middleware: refuse request bodies over `limit` bytes, counting what actually arrives
+    (a chunked upload has no Content-Length to check up front). A bad Content-Length is a 400."""
+
+    def __init__(self, app, limit: int):
+        self.app, self.limit = app, limit
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        headers = dict(scope.get("headers") or [])
+        declared = headers.get(b"content-length")
+        if declared is not None:
+            try:
+                n = int(declared)
+            except ValueError:
+                return await _plain(send, 400, b'{"detail": "invalid Content-Length"}')
+            if n > self.limit:
+                return await _plain(send, 413, f'{{"detail": "request body over {self.limit} bytes"}}'.encode())
+        seen = 0
+        over = False
+        replaced = False
+        too_large = f'{{"detail": "request body over {self.limit} bytes"}}'.encode()
+
+        async def counted():
+            nonlocal seen, over
+            if over:
+                return {"type": "http.disconnect"}
+            msg = await receive()
+            if msg["type"] == "http.request":
+                seen += len(msg.get("body", b""))
+                if seen > self.limit:  # stop reading; whatever the app answers becomes a 413
+                    over = True
+                    return {"type": "http.disconnect"}
+            return msg
+
+        async def guarded_send(msg):
+            nonlocal replaced
+            if not over:
+                return await send(msg)
+            if not replaced and msg["type"] == "http.response.start":
+                replaced = True
+                await _plain(send, 413, too_large)
+            # drop the app's own response to the truncated body
+
+        try:
+            await self.app(scope, counted, guarded_send)
+        except Exception:
+            if not over:
+                raise
+            if not replaced:
+                await _plain(send, 413, too_large)
+
+
+async def _plain(send, status: int, body: bytes) -> None:
+    await send({"type": "http.response.start", "status": status,
+                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+    await send({"type": "http.response.body", "body": body})
+
+
+_RID = re.compile(r"[^A-Za-z0-9._:-]")
 
 
 def create_app(config_path: str | None = None, state_dir: Path | None = None,  # noqa: C901
@@ -139,19 +204,22 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None,  #
     if origins:
         app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST", "DELETE"],
                            allow_headers=["authorization", "content-type", "last-event-id"])
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or allowed_hosts_for(srv))
+    hosts = allowed_hosts or allowed_hosts_for(srv)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
+    app.add_middleware(BodyLimit, limit=max_body)
+    # Without keys or a token the server is open, which is only safe when it can be reached by
+    # local names alone. Behind a reverse proxy serving a real domain, open access would put
+    # the API on the internet, so it is refused until a key exists.
+    open_allowed = all(h in LOCAL_HOSTS or h == "testserver" for h in hosts)
 
     @app.middleware("http")
     async def edge(request: Request, call_next):
         """Request id, body-size limit, security headers, access log and metrics."""
-        rid = request.headers.get("x-request-id", "")[:64] or uuid.uuid4().hex[:16]
+        rid = _RID.sub("", request.headers.get("x-request-id", ""))[:64] or uuid.uuid4().hex[:16]
         token = request_id.set(rid)
         t0 = time.perf_counter()
         try:
-            if int(request.headers.get("content-length") or 0) > max_body:
-                response = JSONResponse({"detail": f"request body over {max_body} bytes"}, status_code=413)
-            else:
-                response = await call_next(request)
+            response = await call_next(request)
         finally:
             request_id.reset(token)
         route = getattr(request.scope.get("route"), "path", "unmatched")
@@ -172,6 +240,9 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None,  #
         if p is None:
             if admin_token or has_keys(db):
                 raise HTTPException(401, "missing or invalid API key")
+            if not open_allowed:
+                raise HTTPException(401, "this server is reachable by a public name: create a key with "
+                                         "`swarm keys create` (or set SWARM_API_TOKEN) to use it")
             p = Principal("local", "local", True)  # open server: only reachable via localhost names
         ok, retry = limiter.allow(p.id, p.rpm if p.rpm is not None else (None if p.admin else default_rpm))
         if not ok:
@@ -186,9 +257,16 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None,  #
         return job
 
     def reserve(p: Principal, cap: float) -> None:
+        """Fail fast before any setup work; the binding check is atomic, in `enqueue`."""
         if p.daily_usd is not None and db.spend_today(p.id) + cap > p.daily_usd + 1e-9:
             raise HTTPException(402, f"daily budget of ${p.daily_usd:.2f} would be exceeded "
                                      f"(${db.spend_today(p.id):.2f} spent or reserved today)")
+
+    def enqueue(p: Principal, kind: str, params: dict, cap: float, parent: str | None = None) -> str:
+        try:
+            return db.enqueue(kind, params, owner=p.id, parent=parent, cap_usd=cap, daily_budget=p.daily_usd)
+        except BudgetExceeded as e:
+            raise HTTPException(402, str(e)) from e
 
     # ------------------------------------------------------------------ request models
 
@@ -258,7 +336,7 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None,  #
             raise HTTPException(400, str(e)) from e
         params = {k: getattr(opts, k) for k in ("question", "preset", "search", "mock", "include_domains",
                                                 "exclude_domains", "recency_days", "kind", "language")}
-        jid = db.enqueue("research", params, owner=p.id, parent=parent, cap_usd=cap)
+        jid = enqueue(p, "research", params, cap, parent)
         log.info("job queued", extra={"job": jid, "kind": "research", "owner": p.id, "cap_usd": cap})
         return jid
 
@@ -293,7 +371,7 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None,  #
     @app.get("/metrics")
     def metrics_route(request: Request) -> PlainTextResponse:
         hdr = request.headers.get("authorization", "")
-        allowed = (metrics_token and hdr == f"Bearer {metrics_token}") or \
+        allowed = (metrics_token and hmac.compare_digest(hdr, f"Bearer {metrics_token}")) or \
             ((p := authenticate(db, hdr, admin_token)) is not None and p.admin) or \
             (not admin_token and not has_keys(db) and not metrics_token)
         if not allowed:
@@ -359,7 +437,7 @@ def create_app(config_path: str | None = None, state_dir: Path | None = None,  #
             raise HTTPException(400, str(e)) from e
         keep = {"write": ("brief", "words", "sections", "model"), "doc": ("action", "text", "to", "style", "words",
                                                                            "model")}[body.kind]
-        jid = db.enqueue(body.kind, {k: getattr(body, k) for k in keep}, owner=p.id, cap_usd=cap)
+        jid = enqueue(p, body.kind, {k: getattr(body, k) for k in keep}, cap)
         log.info("job queued", extra={"job": jid, "kind": body.kind, "owner": p.id, "cap_usd": cap})
         return {"id": jid}
 

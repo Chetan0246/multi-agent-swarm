@@ -226,6 +226,10 @@ async def build(description: str, chat: Chat, out: Path, *, allow_execution: boo
     for attempt in range(fix_rounds + 1):
         failed = _run_all(out, spec, result, log, setup=attempt == 0 or result.notes[-1:] == ["setup changed"])
         if failed is None:
+            if not _cmds(spec, "test"):  # setup worked, but nothing was tested: don't claim a pass
+                result.tests_passed = None
+                log("setup passed, but the plan has no test command, so nothing was tested")
+                break
             result.tests_passed = True
             log("all setup and test commands passed")
             break
@@ -244,7 +248,11 @@ async def build(description: str, chat: Chat, out: Path, *, allow_execution: boo
         for e in fix.get("edits", []) if isinstance(fix.get("edits"), list) else []:
             if not isinstance(e, dict) or not e.get("path"):
                 continue
-            target = safe_path(out, str(e["path"]))
+            try:
+                target = safe_path(out, str(e["path"]))
+            except ConfigError:  # skip one bad edit instead of discarding the whole build
+                result.notes.append(f"skipped an unsafe edit path from the fixer: {str(e['path'])[:100]!r}")
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             content = strip_fences(str(e.get("content", "")))
             target.write_text(content if content.endswith("\n") else content + "\n")
