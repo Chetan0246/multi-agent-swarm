@@ -47,14 +47,17 @@ SUMMARY_SYSTEM = (
     "names, in about {words} words. No commentary and nothing that isn't in the text."
 )
 MERGE_SYSTEM = (
-    "Merge these partial summaries of one document, in order, into a single coherent summary of "
-    "about {words} words: one voice, no repetition, every important point, decision and number "
-    "kept, nothing added. Markdown."
+    "Merge these partial summaries of one document, in order, into a single coherent summary of at "
+    "most {words} words (a hard limit). Summarize, don't enumerate: name what kinds of settings, "
+    "options or steps exist instead of listing each one. Keep the main points, decisions and the few "
+    "numbers that matter; add nothing. One voice, no repetition. Markdown."
 )
 
 CONDENSE_SYSTEM = (
-    "Shorten this summary to about {words} words. Keep every key decision, number and name; drop "
-    "repetition, examples and detail first. Same language and Markdown style. Output only the summary."
+    "This summary is {have} words; rewrite it in at most {words} words (a hard limit). Keep the main "
+    "points and decisions; replace lists of individual settings, flags or names with what they are "
+    "for; drop examples, repetition and detail first. Same language and Markdown style. Output only "
+    "the summary."
 )
 
 
@@ -167,10 +170,15 @@ async def summarize(text: str, chat: Chat, *, words: int = 400, max_chars: int =
     final = await chat.complete(MERGE_SYSTEM.format(words=words),
                                 "\n\n".join(f"Part {i + 1}:\n{s}" for i, s in enumerate(summaries)),
                                 effort="medium", max_tokens=8000, role="doc.merge")
-    # Models overshoot length targets; one condensing pass when the summary is well over it.
-    if len(final.split()) > 1.3 * words:
-        shorter = await chat.complete(CONDENSE_SYSTEM.format(words=words), final, effort="low", max_tokens=4000,
-                                      role="doc.condense")
-        if shorter.strip() and len(shorter.split()) < len(final.split()):
-            final = shorter
+    # Models overshoot length targets, especially on dense technical text: condense (at most
+    # twice) while the summary is more than 30% over the requested length.
+    for _ in range(2):
+        have = len(final.split())
+        if have <= 1.3 * words:
+            break
+        shorter = await chat.complete(CONDENSE_SYSTEM.format(words=words, have=have), final, effort="low",
+                                      max_tokens=4000, role="doc.condense")
+        if not shorter.strip() or len(shorter.split()) >= have:
+            break  # no progress: keep the best version
+        final = shorter
     return DocResult(final.strip() + "\n", len(parts), failed, round(chat.usd, 4), chat.calls)

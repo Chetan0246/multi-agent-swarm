@@ -107,8 +107,9 @@ and line numbers are corrected to where the quote actually is.
 
 A second, skeptical pass then checks each finding against the file and the project files it
 imports (two levels deep). A first reviewer who saw one file may have guessed wrong about a
-module it uses. Findings that the related code disproves are dropped, and ones that depend on
-code nobody can see are marked "unconfirmed". `--no-verify` skips this pass. You get Markdown ranked by
+module it uses. Findings that the related code disproves move to a "Refuted on a second check"
+list at the end of the report, with the verifier's reason, so you can disagree. Findings that
+depend on code nobody can see are marked "unconfirmed". `--no-verify` skips this pass. You get Markdown ranked by
 severity, plus a `.json` file with the findings.
 
 ## Translate, summarize or rewrite long documents

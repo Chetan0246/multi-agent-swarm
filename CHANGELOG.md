@@ -13,8 +13,15 @@ about $0.01 in total). Every figure the analysis reported was correct, checked a
   assumed how an imported module behaves. Each finding is now checked against the project
   files the reviewed file imports (two levels deep). Refuted findings are dropped and
   undecidable ones marked "unconfirmed". `--no-verify` skips this pass.
-- **doc summarize: respects the length target.** A 200-word request returned 342 words. A
-  condensing pass now runs when the merged summary is more than 30% over the target.
+- **doc summarize: respects the length target.** A 200-word request returned 342 words, and
+  389 after a first fix, because the model listed every setting in a dense technical text. The
+  limit is now firm and the model is told to summarise rather than enumerate. Up to two
+  condensing passes run while the summary is more than 30% over the target.
+- **review: refuted findings stay visible.** The second check refuted 4 of 10 live findings
+  (including the earlier false positive). They are no longer silently dropped: the report ends
+  with a "Refuted on a second check" list giving the verifier's reason for each, and the JSON
+  records every finding's `status` and `verifier_reason`. If the verifier is ever wrong, you
+  can see it.
 
 ## 3.3.1 — fixes from the 3.3.0 audit
 Fixes from an audit of the 3.1–3.3 code, each with a regression test (`tests/test_audit2.py`).

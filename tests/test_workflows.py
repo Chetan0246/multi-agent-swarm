@@ -267,6 +267,11 @@ def test_review_verifier_drops_refuted_findings_with_related_code(tmp_path):
     assert res.refuted == 1 and [f.title for f in res.findings] == ["maybe fine"]
     assert res.findings[0].category.endswith("(unconfirmed)") and "refuted them" in res.markdown
     assert all("--- app/config.py ---" in u for u in seen_ctx)  # the verifier saw the related module
+    assert "## Refuted on a second check" in res.markdown and "env read too early" in res.markdown  # auditable
+    from swarm.workflows.review import to_json
+
+    rows = to_json(res)
+    assert sorted(r["status"] for r in rows) == ["refuted", "unconfirmed"] and all("verifier_reason" in r for r in rows)
 
 
 def test_summary_is_condensed_when_far_over_its_target():
@@ -281,3 +286,21 @@ def test_summary_is_condensed_when_far_over_its_target():
 
     res = asyncio.run(summarize("## A\n\n" + "text " * 500, MockChat(respond), words=200))
     assert len(res.text.split()) == 190
+
+
+def test_summary_gets_a_second_condensing_pass_when_needed():
+    from swarm.workflows.doc import summarize
+
+    lengths = iter([300, 180])  # the first pass isn't enough (300 > 1.3 x 200); the second is
+    asked = []
+
+    def respond(role, system, user, schema):
+        if role == "doc.merge":
+            return "word " * 390
+        if role == "doc.condense":
+            asked.append(system)
+            return "short " * next(lengths)
+        return "part summary"
+
+    res = asyncio.run(summarize("## A\n\n" + "text " * 500, MockChat(respond), words=200))
+    assert len(res.text.split()) == 180 and len(asked) == 2 and "390 words" in asked[0]

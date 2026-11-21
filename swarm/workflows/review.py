@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 import subprocess
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +75,8 @@ class Finding:
     explanation: str
     suggestion: str
     quote: str
+    status: str = "unverified"  # confirmed | unconfirmed | refuted (after the second check)
+    verifier_reason: str = ""
 
 
 @dataclass
@@ -86,6 +88,7 @@ class ReviewResult:
     usd: float
     calls: int
     refuted: int = 0  # findings a verifier showed to be wrong, given the related code
+    refuted_findings: list[Finding] = field(default_factory=list)  # kept for audit, never hidden
 
 
 def collect(root: Path, max_files: int = 80, max_bytes: int = 200_000) -> list[Path]:
@@ -183,12 +186,13 @@ async def review(root: Path, chat: Chat, *, focus: str = "", max_files: int = 80
         if key not in seen:
             seen.add(key)
             unique.append(f)
-    refuted = 0
+    refuted: list[Finding] = []
     if verify_findings and unique:
         unique, refuted = await verify(unique, texts, chat, agents=agents)
-    log(f"{len(unique)} findings kept, {dropped} dropped (quote not in the file), {refuted} refuted on a second check")
+    log(f"{len(unique)} findings kept, {dropped} dropped (quote not in the file), "
+        f"{len(refuted)} refuted on a second check")
     return ReviewResult(_markdown(root, unique, len(files), dropped, refuted), unique, len(files), dropped,
-                        round(chat.usd, 4), chat.calls, refuted)
+                        round(chat.usd, 4), chat.calls, len(refuted), refuted)
 
 
 _IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))|require\(['\"]\.{1,2}/([\w./-]+)['\"]\)"
@@ -226,7 +230,7 @@ def related_files(rel: str, texts: dict[str, str], limit_chars: int = 30_000, de
 
 
 async def verify(findings: list[Finding], texts: dict[str, str], chat: Chat, agents: int = 8
-                 ) -> tuple[list[Finding], int]:
+                 ) -> tuple[list[Finding], list[Finding]]:
     """A second, skeptical pass with the related code: drop findings it refutes."""
     from ..research import _parse_json_obj
 
@@ -241,21 +245,29 @@ async def verify(findings: list[Finding], texts: dict[str, str], chat: Chat, age
 
     got = await parallel(chat, {f"v{i}": job(i, f) for i, f in enumerate(findings)}, agents=agents,
                          check=lambda _, a: _parse_json_obj(a).get("verdict") in ("confirmed", "refuted", "unsure"))
-    kept, refuted = [], 0
+    kept: list[Finding] = []
+    refuted: list[Finding] = []
     for i, f in enumerate(findings):
-        verdict = _parse_json_obj(got.get(f"v{i}") or "").get("verdict", "unsure")
+        v = _parse_json_obj(got.get(f"v{i}") or "")
+        verdict = v.get("verdict", "unsure")
+        f.verifier_reason = str(v.get("reason", ""))[:500]
         if verdict == "refuted":
-            refuted += 1
+            f.status = "refuted"
+            refuted.append(f)
             continue
-        if verdict == "unsure":
+        f.status = "confirmed" if verdict == "confirmed" else "unconfirmed"
+        if verdict != "confirmed":
             f.category = f"{f.category} (unconfirmed)"
         kept.append(f)
     return kept, refuted
 
 
-def _markdown(root: Path, findings: list[Finding], n_files: int, dropped: int, refuted: int = 0) -> str:
+def _markdown(root: Path, findings: list[Finding], n_files: int, dropped: int,
+              refuted: list[Finding] | None = None) -> str:
+    refuted = refuted or []
     counts = {s: sum(f.severity == s for f in findings) for s in SEVERITY}
-    refuted_note = f", and {refuted} because a second check of the related code refuted them" if refuted else ""
+    refuted_note = (f", and {len(refuted)} because a second check of the related code refuted them (listed at "
+                    "the end)") if refuted else ""
     out = [f"# Code review: {root.name}", "",
            f"{n_files} files reviewed; {len(findings)} findings ({counts['high']} high, {counts['medium']} medium, "
            f"{counts['low']} low). {dropped} findings were discarded because their quoted code "
@@ -264,8 +276,18 @@ def _markdown(root: Path, findings: list[Finding], n_files: int, dropped: int, r
         quote = "\n".join(f.quote.splitlines()[:6])
         out += [f"## [{f.severity}] {f.title}", f"`{f.file}:{f.line}` · {f.category}", "",
                 f.explanation, "", "```", quote, "```", "", f"**Fix:** {f.suggestion}", ""]
+        if f.status == "unconfirmed" and f.verifier_reason:
+            out += [f"*Second check:* {f.verifier_reason}", ""]
+    if refuted:
+        out += ["## Refuted on a second check", "",
+                "The first reviewer raised these, but the related code shows they don't hold. They are listed "
+                "so you can disagree.", ""]
+        out += [f"- `{f.file}:{f.line}` [{f.severity}] {f.title}: {f.verifier_reason or 'no reason given'}"
+                for f in refuted]
+        out.append("")
     return "\n".join(out)
 
 
 def to_json(result: ReviewResult) -> list[dict[str, Any]]:
-    return [asdict(f) for f in result.findings]
+    """Every finding, refuted ones included, each with its `status` and the verifier's reason."""
+    return [asdict(f) for f in result.findings + result.refuted_findings]
